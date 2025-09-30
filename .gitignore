@@ -1,0 +1,18 @@
+/vendor/
+/node_modules/
+.env
+.env.backup
+.phpunit.result.cache
+Homestead.json
+Homestead.yaml
+npm-debug.log
+yarn-error.log
+.DS_Store
+Thumbs.db
+
+# AI Agent Documentation
+AGENTS.md
+AGENT.md
+.amp/
+.cursor/
+.aider*
