@@ -92,6 +92,8 @@ return [
     'tools' => [
         'max_registered' => env('OPENAI_MAX_TOOLS', 100),
         'timeout' => env('OPENAI_TOOL_TIMEOUT', 10),
+        'auto_execute' => env('OPENAI_AUTO_EXECUTE_TOOLS', true),
+        'max_iterations' => env('OPENAI_MAX_TOOL_ITERATIONS', 5),
     ],
     
     /*

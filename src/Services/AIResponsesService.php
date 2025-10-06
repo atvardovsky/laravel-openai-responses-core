@@ -134,6 +134,12 @@ class AIResponsesService
         
         try {
             $response = $this->makeRequest($context['payload']);
+            
+            // Auto-execute tools if enabled and tools are present
+            if ($this->shouldAutoExecuteTools($options) && !empty($context['tools'])) {
+                $response = $this->executeToolLoop($messages, $response, $options, $requestId);
+            }
+            
             $duration = microtime(true) - $startTime;
             $metrics = $this->buildMetrics($response, $duration);
             
@@ -784,5 +790,78 @@ class AIResponsesService
         $completionRate = $pricing['completion'] / 1000; // per 1K tokens
         
         return ($promptTokens * $promptRate) + ($completionTokens * $completionRate);
+    }
+
+    private function shouldAutoExecuteTools(array $options): bool
+    {
+        // Allow per-request override
+        if (isset($options['auto_execute_tools'])) {
+            return (bool) $options['auto_execute_tools'];
+        }
+        
+        // Use config default
+        return $this->config['tools']['auto_execute'] ?? true;
+    }
+
+    private function executeToolLoop(array $initialMessages, array $response, array $options, string $requestId): array
+    {
+        $messages = $initialMessages;
+        $maxIterations = $this->config['tools']['max_iterations'] ?? 5;
+        $iteration = 0;
+        
+        while ($iteration < $maxIterations) {
+            $iteration++;
+            
+            // Check if response contains tool calls
+            $toolCalls = $response['choices'][0]['message']['tool_calls'] ?? null;
+            $finishReason = $response['choices'][0]['finish_reason'] ?? 'stop';
+            
+            // If no tool calls or finished normally, return the response
+            if (!$toolCalls || $finishReason === 'stop') {
+                break;
+            }
+            
+            // Add assistant's message with tool calls to conversation
+            $messages[] = $response['choices'][0]['message'];
+            
+            // Execute each tool call
+            foreach ($toolCalls as $toolCall) {
+                if ($toolCall['type'] !== 'function') {
+                    continue;
+                }
+                
+                $functionName = $toolCall['function']['name'];
+                $arguments = json_decode($toolCall['function']['arguments'] ?? '{}', true) ?: [];
+                
+                try {
+                    // Execute the tool via registry
+                    $result = $this->toolRegistry->call($functionName, $arguments);
+                    
+                    // Add tool result to conversation
+                    $messages[] = [
+                        'role' => 'tool',
+                        'tool_call_id' => $toolCall['id'],
+                        'content' => is_string($result) ? $result : json_encode($result)
+                    ];
+                } catch (\Exception $e) {
+                    // Add error as tool result
+                    $messages[] = [
+                        'role' => 'tool',
+                        'tool_call_id' => $toolCall['id'],
+                        'content' => 'Error executing tool: ' . $e->getMessage()
+                    ];
+                }
+            }
+            
+            // Make another request with the updated conversation
+            $context = $this->buildRequestContext($messages, $options);
+            $response = $this->makeRequest($context['payload']);
+        }
+        
+        if ($iteration >= $maxIterations) {
+            throw new AIResponseException("Tool execution exceeded maximum iterations ({$maxIterations})");
+        }
+        
+        return $response;
     }
 }

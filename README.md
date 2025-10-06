@@ -45,6 +45,10 @@ OPENAI_MAX_MESSAGES=50
 OPENAI_MAX_BUFFER_SIZE=65536
 OPENAI_MAX_TOTAL_SIZE=10485760
 
+# Tool execution
+OPENAI_AUTO_EXECUTE_TOOLS=true
+OPENAI_MAX_TOOL_ITERATIONS=5
+
 # File upload limits  
 OPENAI_MAX_FILE_SIZE=20971520
 ```
@@ -88,44 +92,42 @@ app(ToolRegistry::class)->register('get_weather', [
     'parameters' => [
         'type' => 'object',
         'properties' => [
-            'location' => ['type' => 'string']
-        ]
+            'location' => ['type' => 'string', 'description' => 'City name']
+        ],
+        'required' => ['location']
     ]
 ], function ($args) {
+    // This function executes when AI calls the tool
     return "Weather in {$args['location']}: Sunny, 72°F";
 });
 
-// Build conversation with tool support
-$messages = [
+// Automatic tool execution (enabled by default)
+$response = AIResponses::withTools(['get_weather'])->respond([
     ['role' => 'user', 'content' => 'What\'s the weather in New York?']
-];
+]);
 
-$response = AIResponses::withTools(['get_weather'])->respond($messages);
+// Tools are automatically executed and the final answer is returned
+echo $response['choices'][0]['message']['content'];
+// Output: "The weather in New York is sunny with a temperature of 72°F"
+```
 
-// Note: Tool execution is manual. Check for tool_calls in the response:
+**How it works:**
+1. AI receives your question and available tools
+2. AI decides to call `get_weather` with `{location: "New York"}`
+3. Package automatically executes your registered function
+4. AI receives the result and formulates a natural answer
+5. You get the final response
+
+**Disable auto-execution** for manual control:
+```php
+$response = AIResponses::withTools(['get_weather'])->respond(
+    $messages,
+    ['auto_execute_tools' => false]
+);
+
+// Then manually handle tool_calls if needed
 if (isset($response['choices'][0]['message']['tool_calls'])) {
-    // Add the assistant's response with tool calls to conversation
-    $messages[] = $response['choices'][0]['message'];
-    
-    // Execute each tool and add results to conversation
-    foreach ($response['choices'][0]['message']['tool_calls'] as $toolCall) {
-        $name = $toolCall['function']['name'];
-        $args = json_decode($toolCall['function']['arguments'], true);
-        
-        // Execute the tool
-        $result = app(ToolRegistry::class)->call($name, $args);
-        
-        // Add tool response to conversation
-        $messages[] = [
-            'role' => 'tool',
-            'tool_call_id' => $toolCall['id'],
-            'content' => is_string($result) ? $result : json_encode($result)
-        ];
-    }
-    
-    // Continue the conversation with tool results
-    $finalResponse = AIResponses::respond($messages);
-    echo $finalResponse['choices'][0]['message']['content'];
+    // Manual execution logic here
 }
 ```
 
