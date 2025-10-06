@@ -421,36 +421,49 @@ class AIResponsesService
         }
 
         foreach ($messages as $message) {
-            if (!isset($message['role'], $message['content'])) {
-                throw new AIResponseException('Each message must have role and content');
+            if (!isset($message['role'])) {
+                throw new AIResponseException('Each message must have a role');
             }
             
             if (!in_array($message['role'], ['system', 'user', 'assistant', 'tool'])) {
                 throw new AIResponseException('Invalid message role: ' . $message['role']);
             }
 
-            // Validate content type (string or array for multimodal)
-            $content = $message['content'];
-            if (!is_string($content) && !is_array($content)) {
-                throw new AIResponseException('Message content must be string or array');
+            // Assistant messages with tool_calls don't require content
+            // Tool messages and regular messages must have content
+            $hasToolCalls = isset($message['tool_calls']) && !empty($message['tool_calls']);
+            $hasContent = isset($message['content']);
+            
+            if (!$hasContent && !$hasToolCalls) {
+                throw new AIResponseException('Message must have either content or tool_calls');
             }
 
-            // For string content, check length
-            if (is_string($content)) {
-                $maxLength = $this->config['validation']['max_message_length'] ?? 100000;
-                if (strlen($content) > $maxLength) {
-                    throw new AIResponseException("Message content too long. Maximum allowed: {$maxLength} characters");
+            // Validate content if present
+            if ($hasContent) {
+                $content = $message['content'];
+                
+                // Validate content type (string or array for multimodal)
+                if (!is_string($content) && !is_array($content)) {
+                    throw new AIResponseException('Message content must be string or array');
                 }
-            }
 
-            // For array content (multimodal), validate structure
-            if (is_array($content)) {
-                foreach ($content as $item) {
-                    if (!isset($item['type'])) {
-                        throw new AIResponseException('Multimodal content items must have a type');
+                // For string content, check length
+                if (is_string($content)) {
+                    $maxLength = $this->config['validation']['max_message_length'] ?? 100000;
+                    if (strlen($content) > $maxLength) {
+                        throw new AIResponseException("Message content too long. Maximum allowed: {$maxLength} characters");
                     }
-                    if (!in_array($item['type'], ['text', 'image_url'])) {
-                        throw new AIResponseException('Invalid content type: ' . $item['type']);
+                }
+
+                // For array content (multimodal), validate structure
+                if (is_array($content)) {
+                    foreach ($content as $item) {
+                        if (!isset($item['type'])) {
+                            throw new AIResponseException('Multimodal content items must have a type');
+                        }
+                        if (!in_array($item['type'], ['text', 'image_url'])) {
+                            throw new AIResponseException('Invalid content type: ' . $item['type']);
+                        }
                     }
                 }
             }

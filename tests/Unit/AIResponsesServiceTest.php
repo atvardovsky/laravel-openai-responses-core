@@ -60,10 +60,10 @@ class AIResponsesServiceTest extends TestCase
         );
 
         $this->expectException(AIResponseException::class);
-        $this->expectExceptionMessage('Each message must have role and content');
+        $this->expectExceptionMessage('Message must have either content or tool_calls');
         
         $service->respond([
-            ['role' => 'user'] // Missing content
+            ['role' => 'user'] // Missing content and tool_calls
         ]);
     }
 
