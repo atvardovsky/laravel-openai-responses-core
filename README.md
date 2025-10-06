@@ -1,6 +1,6 @@
 # Laravel OpenAI Responses Core
 
-A Laravel package for working with OpenAI's Responses API with minimal overhead. Supports Laravel 11 and PHP 8.2+.
+A Laravel package for working with OpenAI's Chat Completions API with minimal overhead. Supports Laravel 11 and PHP 8.2+.
 
 ## Features
 
@@ -71,9 +71,12 @@ foreach (AIResponses::stream([
 ]) as $chunk) {
     echo $chunk['choices'][0]['delta']['content'] ?? '';
 }
+
+// Note: Usage metrics (tokens/cost) are automatically included in streaming 
+// via stream_options when metrics are enabled in configuration
 ```
 
-### With Tools
+### With Tools (Function Calling)
 
 ```php
 use Atvardovsky\LaravelOpenAIResponses\Services\ToolRegistry;
@@ -92,14 +95,44 @@ app(ToolRegistry::class)->register('get_weather', [
     return "Weather in {$args['location']}: Sunny, 72°F";
 });
 
-$response = AIResponses::withTools(['get_weather'])->respond([
+// Build conversation with tool support
+$messages = [
     ['role' => 'user', 'content' => 'What\'s the weather in New York?']
-]);
+];
+
+$response = AIResponses::withTools(['get_weather'])->respond($messages);
+
+// Note: Tool execution is manual. Check for tool_calls in the response:
+if (isset($response['choices'][0]['message']['tool_calls'])) {
+    // Add the assistant's response with tool calls to conversation
+    $messages[] = $response['choices'][0]['message'];
+    
+    // Execute each tool and add results to conversation
+    foreach ($response['choices'][0]['message']['tool_calls'] as $toolCall) {
+        $name = $toolCall['function']['name'];
+        $args = json_decode($toolCall['function']['arguments'], true);
+        
+        // Execute the tool
+        $result = app(ToolRegistry::class)->call($name, $args);
+        
+        // Add tool response to conversation
+        $messages[] = [
+            'role' => 'tool',
+            'tool_call_id' => $toolCall['id'],
+            'content' => is_string($result) ? $result : json_encode($result)
+        ];
+    }
+    
+    // Continue the conversation with tool results
+    $finalResponse = AIResponses::respond($messages);
+    echo $finalResponse['choices'][0]['message']['content'];
+}
 ```
 
-### With Files
+### With Files (Vision)
 
 ```php
+// Files are embedded as base64 data URLs for vision/multimodal input
 $response = AIResponses::withFiles([
     '/path/to/image.jpg'
 ])->respond([
@@ -389,11 +422,6 @@ The package provides full IDE autocomplete and type checking through:
 - Generic type hints for collections and generators
 - Property-level documentation for models
 - Exception context documentation
-
-## Requirements
-
-- PHP 8.2+
-- Laravel 11.0+
 
 ## License
 

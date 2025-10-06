@@ -16,6 +16,7 @@ use Atvardovsky\LaravelOpenAIResponses\Services\AILoggingService;
 use Atvardovsky\LaravelOpenAIResponses\Services\AIPricingService;
 use Atvardovsky\LaravelOpenAIResponses\Services\AIResponsesService;
 use Atvardovsky\LaravelOpenAIResponses\Services\ToolRegistry;
+use Atvardovsky\LaravelOpenAIResponses\Services\VectorStoreService;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
 
@@ -39,6 +40,10 @@ class AIResponsesServiceProvider extends ServiceProvider
 
         $this->app->singleton(AIPricingService::class, function ($app) {
             return new AIPricingService();
+        });
+        
+        $this->app->singleton(VectorStoreService::class, function ($app) {
+            return new VectorStoreService();
         });
 
         $this->app->singleton(AIResponsesService::class, function ($app) {

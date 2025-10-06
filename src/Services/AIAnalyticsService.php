@@ -20,7 +20,10 @@ class AIAnalyticsService
 
         $targetDate = $date ? Carbon::parse($date) : Carbon::yesterday();
         
-        $requests = AIRequest::whereDate('created_at', $targetDate)->get();
+        $requests = AIRequest::whereBetween('created_at', [
+            $targetDate->copy()->startOfDay(),
+            $targetDate->copy()->endOfDay(),
+        ])->get();
         
         $groupedByModel = $requests->groupBy('model');
         
@@ -50,7 +53,11 @@ class AIAnalyticsService
             'average_duration' => $metrics->avg('avg_duration_ms'),
             'success_rate' => $this->calculateSuccessRate($metrics),
             'daily_breakdown' => $metrics->groupBy('date')->map(function ($dayMetrics) {
-                return $dayMetrics->sum();
+                return [
+                    'requests' => $dayMetrics->sum('total_requests'),
+                    'tokens' => $dayMetrics->sum('total_tokens'),
+                    'cost' => $dayMetrics->sum('total_cost'),
+                ];
             }),
             'model_breakdown' => $metrics->groupBy('model')->map(function ($modelMetrics) {
                 return [

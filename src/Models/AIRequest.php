@@ -45,6 +45,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  */
 class AIRequest extends Model
 {
+    protected $table = 'ai_requests';
+
     protected $fillable = [
         'request_id',
         'model',

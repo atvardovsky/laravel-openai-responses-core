@@ -209,21 +209,45 @@ class AIResponsesService
         
         $startTime = microtime(true);
         $chunkCount = 0;
+        $usageData = null;
         
         try {
             foreach ($this->makeStreamingRequest($context['payload']) as $chunk) {
                 $chunkCount++;
+                
+                // Capture usage data from final chunk (when stream_options.include_usage is true)
+                if (isset($chunk['usage'])) {
+                    $usageData = $chunk;
+                }
+                
                 yield $chunk;
             }
             
+            $duration = microtime(true) - $startTime;
+            $metrics = ['streaming' => true, 'chunks' => $chunkCount];
+            
+            // Add cost metrics if usage data was received
+            if ($usageData) {
+                $metrics = array_merge($metrics, $this->buildMetrics($usageData, $duration));
+            }
+            
+            $this->events->dispatch(new AfterResponse(
+                $context['payload'], 
+                $usageData ?? [], 
+                $duration, 
+                $metrics, 
+                $requestId
+            ));
+        } catch (RateLimitException $e) {
             $duration = microtime(true) - $startTime;
             $this->events->dispatch(new AfterResponse(
                 $context['payload'], 
                 [], 
                 $duration, 
-                ['streaming' => true, 'chunks' => $chunkCount], 
+                ['error' => $e->getMessage(), 'chunks' => $chunkCount], 
                 $requestId
             ));
+            throw $e;
         } catch (\Exception $e) {
             $duration = microtime(true) - $startTime;
             $this->events->dispatch(new AfterResponse(
@@ -369,6 +393,7 @@ class AIResponsesService
 
         if ($options['stream'] ?? false) {
             $payload['stream'] = true;
+            $payload['stream_options'] = ['include_usage' => true];
         }
 
         return [
@@ -398,9 +423,30 @@ class AIResponsesService
                 throw new AIResponseException('Invalid message role: ' . $message['role']);
             }
 
-            $maxLength = $this->config['validation']['max_message_length'] ?? 100000;
-            if (strlen($message['content']) > $maxLength) {
-                throw new AIResponseException("Message content too long. Maximum allowed: {$maxLength} characters");
+            // Validate content type (string or array for multimodal)
+            $content = $message['content'];
+            if (!is_string($content) && !is_array($content)) {
+                throw new AIResponseException('Message content must be string or array');
+            }
+
+            // For string content, check length
+            if (is_string($content)) {
+                $maxLength = $this->config['validation']['max_message_length'] ?? 100000;
+                if (strlen($content) > $maxLength) {
+                    throw new AIResponseException("Message content too long. Maximum allowed: {$maxLength} characters");
+                }
+            }
+
+            // For array content (multimodal), validate structure
+            if (is_array($content)) {
+                foreach ($content as $item) {
+                    if (!isset($item['type'])) {
+                        throw new AIResponseException('Multimodal content items must have a type');
+                    }
+                    if (!in_array($item['type'], ['text', 'image_url'])) {
+                        throw new AIResponseException('Invalid content type: ' . $item['type']);
+                    }
+                }
             }
         }
     }
@@ -411,6 +457,32 @@ class AIResponsesService
             if (is_string($tool) && !$this->toolRegistry->isRegistered($tool)) {
                 throw new AIResponseException("Tool '{$tool}' is not registered");
             }
+            
+            // Validate array tool schemas
+            if (is_array($tool)) {
+                // If it has 'type' and 'function', validate the function schema
+                if (isset($tool['type'], $tool['function'])) {
+                    $this->validateToolSchema($tool['function']);
+                } elseif (isset($tool['name'])) {
+                    // Direct function schema without wrapper
+                    $this->validateToolSchema($tool);
+                }
+            }
+        }
+    }
+
+    private function validateToolSchema(array $schema): void
+    {
+        if (!isset($schema['name'])) {
+            throw new AIResponseException('Tool schema must have a name');
+        }
+        
+        if (!isset($schema['parameters']) || !is_array($schema['parameters'])) {
+            throw new AIResponseException('Tool schema must have parameters object');
+        }
+        
+        if (!isset($schema['parameters']['type']) || $schema['parameters']['type'] !== 'object') {
+            throw new AIResponseException('Tool parameters must be of type "object"');
         }
     }
 
@@ -466,9 +538,13 @@ class AIResponsesService
 
     private function processMessages(array $messages, array $files = []): array
     {
-        foreach ($messages as &$message) {
-            if (!empty($files) && $message['role'] === 'user') {
-                $message['content'] = $this->attachFilesToContent($message['content'], $files);
+        if (!empty($files)) {
+            // Find the last user message and attach files to it
+            for ($i = count($messages) - 1; $i >= 0; $i--) {
+                if ($messages[$i]['role'] === 'user') {
+                    $messages[$i]['content'] = $this->attachFilesToContent($messages[$i]['content'], $files);
+                    break;
+                }
             }
         }
         
@@ -478,6 +554,7 @@ class AIResponsesService
     private function processTools(array $tools): array
     {
         return array_map(function ($tool) {
+            // Handle string tool names (registered functions)
             if (is_string($tool) && $this->toolRegistry->isRegistered($tool)) {
                 return [
                     'type' => 'function',
@@ -485,13 +562,30 @@ class AIResponsesService
                 ];
             }
             
+            // Handle array tools (custom function definitions for Chat Completions)
+            if (is_array($tool)) {
+                // If it's already a full tool definition (has 'type'), return as-is
+                if (isset($tool['type'])) {
+                    return $tool;
+                }
+                
+                // Otherwise assume it's a function definition and wrap it
+                return [
+                    'type' => 'function',
+                    'function' => $tool
+                ];
+            }
+            
             return $tool;
         }, $tools);
     }
 
-    private function attachFilesToContent(string $content, array $files): array
+    private function attachFilesToContent(string|array $content, array $files): array
     {
-        $contentArray = [['type' => 'text', 'text' => $content]];
+        // Initialize content array based on input type
+        $contentArray = is_string($content) 
+            ? [['type' => 'text', 'text' => $content]]
+            : $content;
         
         foreach ($files as $file) {
             if (is_array($file) && isset($file['type'], $file['data'])) {
@@ -532,6 +626,9 @@ class AIResponsesService
     private function makeStreamingRequest(array $payload): \Generator
     {
         $stream = $this->getHttpClient()
+            ->withHeaders([
+                'Accept' => 'text/event-stream',
+            ])
             ->withOptions([
                 'stream' => true,
                 'buffer' => false,
@@ -616,22 +713,34 @@ class AIResponsesService
 
     private function handleRateLimit($response): void
     {
-        $headers = $response->headers();
+        // Use case-insensitive header access
+        $retryAfter = $response->header('Retry-After');
+        $resetTime = $retryAfter ? (is_numeric($retryAfter) ? time() + intval($retryAfter) : strtotime($retryAfter)) : 0;
         
-        $resetTime = floatval($headers['x-ratelimit-reset-requests'][0] ?? 0);
-        $remaining = intval($headers['x-ratelimit-remaining-requests'][0] ?? 0);
+        // Fallback to OpenAI-specific headers
+        if (!$resetTime) {
+            $resetTime = floatval($response->header('X-RateLimit-Reset-Requests') ?? 0);
+        }
+        
+        $remaining = intval($response->header('X-RateLimit-Remaining-Requests') ?? 0);
+        $remainingTokens = intval($response->header('X-RateLimit-Remaining-Tokens') ?? 0);
+        $limit = intval($response->header('X-RateLimit-Limit-Requests') ?? 0);
+        $limitTokens = intval($response->header('X-RateLimit-Limit-Tokens') ?? 0);
+        
+        // Determine if it's token-based or request-based rate limiting
+        $type = ($remainingTokens === 0 && $limitTokens > 0) ? 'tokens' : 'requests';
         
         $this->events->dispatch(new RateLimited(
-            'requests',
-            $remaining,
-            intval($headers['x-ratelimit-limit-requests'][0] ?? 0),
+            $type,
+            $type === 'tokens' ? $remainingTokens : $remaining,
+            $type === 'tokens' ? $limitTokens : $limit,
             $resetTime
         ));
         
         throw new RateLimitException(
             'Rate limit exceeded. Try again later.',
             $resetTime,
-            $remaining
+            $type === 'tokens' ? $remainingTokens : $remaining
         );
     }
 

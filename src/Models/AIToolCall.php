@@ -7,6 +7,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class AIToolCall extends Model
 {
+    protected $table = 'ai_tool_calls';
+
     protected $fillable = [
         'request_id',
         'tool_name',

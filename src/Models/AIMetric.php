@@ -6,6 +6,8 @@ use Illuminate\Database\Eloquent\Model;
 
 class AIMetric extends Model
 {
+    protected $table = 'ai_metrics';
+
     protected $fillable = [
         'date',
         'model',

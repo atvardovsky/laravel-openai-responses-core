@@ -83,18 +83,23 @@ class AIResponsesServiceTest extends TestCase
 
     public function test_with_tools_method(): void
     {
+        $registry = $this->app->make(ToolRegistry::class);
+        $registry->register('test_tool', ['name' => 'test_tool'], fn() => 'test');
+        
         $service = AIResponses::withTools(['test_tool']);
         $this->assertInstanceOf(AIResponsesService::class, $service);
     }
 
     public function test_with_files_method(): void
     {
-        $service = AIResponses::withFiles(['test.jpg']);
+        $service = AIResponses::withFiles([]);
         $this->assertInstanceOf(AIResponsesService::class, $service);
     }
 
     public function test_tool_registry_registration(): void
     {
+        Event::fake();
+        
         $registry = $this->app->make(ToolRegistry::class);
         
         $registry->register('test_tool', [

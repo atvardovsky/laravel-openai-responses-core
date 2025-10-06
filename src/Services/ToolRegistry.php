@@ -84,7 +84,7 @@ class ToolRegistry
      * @param callable $callable Function to execute when tool is called.
      *                           Receives single array argument with parameters.
      * @param array $limits Optional tool-specific limits (overrides defaults):
-     *                     - 'timeout' (int): Execution timeout in seconds
+     *                     - 'timeout' (int): Execution timeout in seconds (advisory - requires pcntl extension for enforcement)
      * 
      * @return void
      * 
@@ -115,6 +115,10 @@ class ToolRegistry
      */
     public function register(string $name, array $schema, callable $callable, array $limits = []): void
     {
+        if (isset($this->tools[$name])) {
+            throw new \InvalidArgumentException("Tool '{$name}' is already registered");
+        }
+        
         if (count($this->tools) >= $this->limits['max_registered']) {
             throw new \InvalidArgumentException("Maximum number of tools ({$this->limits['max_registered']}) reached");
         }
