@@ -55,6 +55,20 @@ class AIResponsesService
     private Dispatcher $events;
 
     /**
+     * Default tools to include in requests.
+     * 
+     * @var array $defaultTools Tools set via withTools()
+     */
+    private array $defaultTools = [];
+
+    /**
+     * Default files to include in requests.
+     * 
+     * @var array $defaultFiles Files set via withFiles()
+     */
+    private array $defaultFiles = [];
+
+    /**
      * Create a new AI Responses Service instance.
      * 
      * Initializes the service with configuration, tool registry, and event dispatcher.
@@ -63,6 +77,8 @@ class AIResponsesService
      * @param array $config Service configuration including API keys, timeouts, validation rules
      * @param ToolRegistry $toolRegistry Registry for managing callable tools
      * @param Dispatcher $events Laravel event dispatcher for firing service events
+     * @param array $defaultTools Default tools to include
+     * @param array $defaultFiles Default files to include
      * 
      * @throws AIResponseException If required configuration fields are missing
      * 
@@ -71,11 +87,15 @@ class AIResponsesService
     public function __construct(
         array $config,
         ToolRegistry $toolRegistry,
-        Dispatcher $events
+        Dispatcher $events,
+        array $defaultTools = [],
+        array $defaultFiles = []
     ) {
         $this->config = $config;
         $this->toolRegistry = $toolRegistry;
         $this->events = $events;
+        $this->defaultTools = $defaultTools;
+        $this->defaultFiles = $defaultFiles;
         $this->validateConfiguration();
     }
 
@@ -311,8 +331,9 @@ class AIResponsesService
     public function withTools(array $tools): self
     {
         $this->validateTools($tools);
-        // Return new instance to avoid state mutation (thread-safe)
-        return new self($this->config, $this->toolRegistry, $this->events);
+        // Return new instance with tools persisted (thread-safe)
+        $mergedTools = array_values(array_unique([...$this->defaultTools, ...$tools]));
+        return new self($this->config, $this->toolRegistry, $this->events, $mergedTools, $this->defaultFiles);
     }
 
     /**
@@ -355,8 +376,9 @@ class AIResponsesService
     public function withFiles(array $files): self
     {
         $this->validateFiles($files);
-        // Return new instance to avoid state mutation (thread-safe)
-        return new self($this->config, $this->toolRegistry, $this->events);
+        // Return new instance with files persisted (thread-safe)
+        $mergedFiles = array_merge($this->defaultFiles, $files);
+        return new self($this->config, $this->toolRegistry, $this->events, $this->defaultTools, $mergedFiles);
     }
 
     private function validateConfiguration(): void
@@ -375,8 +397,9 @@ class AIResponsesService
         $this->validateMessages($messages);
         $this->validateOptions($options);
         
-        $tools = $options['tools'] ?? [];
-        $files = $options['files'] ?? [];
+        // Merge default tools/files with options
+        $tools = array_values(array_unique([...$this->defaultTools, ...($options['tools'] ?? [])]));
+        $files = array_merge($this->defaultFiles, $options['files'] ?? []);
         
         if (!empty($tools)) {
             $this->validateTools($tools);
@@ -430,9 +453,14 @@ class AIResponsesService
             }
 
             // Assistant messages with tool_calls don't require content
-            // Tool messages and regular messages must have content
+            // Tool messages must have tool_call_id
+            // Other messages must have content
             $hasToolCalls = isset($message['tool_calls']) && !empty($message['tool_calls']);
             $hasContent = isset($message['content']);
+            
+            if ($message['role'] === 'tool' && !isset($message['tool_call_id'])) {
+                throw new AIResponseException('Tool messages must include tool_call_id');
+            }
             
             if (!$hasContent && !$hasToolCalls) {
                 throw new AIResponseException('Message must have either content or tool_calls');
@@ -825,42 +853,79 @@ class AIResponsesService
         while ($iteration < $maxIterations) {
             $iteration++;
             
-            // Check if response contains tool calls
-            $toolCalls = $response['choices'][0]['message']['tool_calls'] ?? null;
-            $finishReason = $response['choices'][0]['finish_reason'] ?? 'stop';
+            // Guard against malformed response structure
+            $choice = $response['choices'][0] ?? null;
+            $assistant = $choice['message'] ?? null;
             
-            // If no tool calls or finished normally, return the response
-            if (!$toolCalls || $finishReason === 'stop') {
+            if (!$assistant) {
+                break;
+            }
+            
+            $toolCalls = $assistant['tool_calls'] ?? [];
+            
+            // If no tool calls, we're done
+            if (empty($toolCalls)) {
                 break;
             }
             
             // Add assistant's message with tool calls to conversation
-            $messages[] = $response['choices'][0]['message'];
+            $messages[] = $assistant;
             
             // Execute each tool call
             foreach ($toolCalls as $toolCall) {
-                if ($toolCall['type'] !== 'function') {
+                if (($toolCall['type'] ?? null) !== 'function') {
                     continue;
                 }
                 
-                $functionName = $toolCall['function']['name'];
-                $arguments = json_decode($toolCall['function']['arguments'] ?? '{}', true) ?: [];
+                $functionName = $toolCall['function']['name'] ?? null;
+                $rawArgs = $toolCall['function']['arguments'] ?? '{}';
+                $toolCallId = $toolCall['id'] ?? null;
+                
+                if (!$functionName) {
+                    $messages[] = [
+                        'role' => 'tool',
+                        'tool_call_id' => $toolCallId,
+                        'content' => 'Error: Missing function name in tool call'
+                    ];
+                    continue;
+                }
+                
+                // Parse JSON arguments with error handling
+                $arguments = json_decode($rawArgs, true);
+                if (json_last_error() !== JSON_ERROR_NONE) {
+                    $messages[] = [
+                        'role' => 'tool',
+                        'tool_call_id' => $toolCallId,
+                        'content' => 'Error parsing tool arguments: ' . json_last_error_msg()
+                    ];
+                    continue;
+                }
                 
                 try {
                     // Execute the tool via registry
                     $result = $this->toolRegistry->call($functionName, $arguments);
                     
-                    // Add tool result to conversation
+                    // Safely serialize result
+                    if (is_string($result)) {
+                        $content = $result;
+                    } else {
+                        try {
+                            $content = json_encode($result, JSON_THROW_ON_ERROR);
+                        } catch (\JsonException $je) {
+                            $content = 'Error serializing tool result: ' . $je->getMessage();
+                        }
+                    }
+                    
                     $messages[] = [
                         'role' => 'tool',
-                        'tool_call_id' => $toolCall['id'],
-                        'content' => is_string($result) ? $result : json_encode($result)
+                        'tool_call_id' => $toolCallId,
+                        'content' => $content
                     ];
                 } catch (\Exception $e) {
                     // Add error as tool result
                     $messages[] = [
                         'role' => 'tool',
-                        'tool_call_id' => $toolCall['id'],
+                        'tool_call_id' => $toolCallId,
                         'content' => 'Error executing tool: ' . $e->getMessage()
                     ];
                 }
