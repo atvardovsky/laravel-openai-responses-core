@@ -591,19 +591,112 @@ class AIResponsesService
         return $options['temperature'] ?? $this->config['temperature'] ?? 0.7;
     }
 
+    /**
+     * Process messages into Responses API input format
+     * Converts Chat Completions message format to Responses API input items
+     */
     private function processMessages(array $messages, array $files = []): array
     {
-        if (!empty($files)) {
-            // Find the last user message and attach files to it
-            for ($i = count($messages) - 1; $i >= 0; $i--) {
-                if ($messages[$i]['role'] === 'user') {
-                    $messages[$i]['content'] = $this->attachFilesToContent($messages[$i]['content'], $files);
-                    break;
+        $inputItems = [];
+        
+        foreach ($messages as $message) {
+            $role = $message['role'];
+            $content = $message['content'] ?? null;
+            
+            // Handle different message types for Responses API
+            if ($role === 'system') {
+                // System messages become developer role in Responses API
+                $inputItems[] = [
+                    'role' => 'developer',
+                    'content' => $this->formatContent($content, $files, $role)
+                ];
+            } elseif ($role === 'user') {
+                $inputItems[] = [
+                    'role' => 'user',
+                    'content' => $this->formatContent($content, $files, $role)
+                ];
+            } elseif ($role === 'assistant') {
+                // Assistant messages with tool_calls need special handling
+                if (isset($message['tool_calls'])) {
+                    // Skip - tool calls will be reconstructed from conversation history
+                    continue;
+                }
+                
+                $inputItems[] = [
+                    'role' => 'assistant',
+                    'content' => $this->formatContent($content, [], $role)
+                ];
+            } elseif ($role === 'tool') {
+                // Tool messages become function_call_output items
+                $inputItems[] = [
+                    'type' => 'function_call_output',
+                    'call_id' => $message['tool_call_id'] ?? 'unknown',
+                    'output' => is_string($content) ? $content : json_encode($content)
+                ];
+            }
+        }
+        
+        return $inputItems;
+    }
+    
+    /**
+     * Format content for Responses API with proper type structure
+     */
+    private function formatContent(string|array|null $content, array $files = [], string $role = 'user'): array
+    {
+        $formatted = [];
+        
+        // Handle string content
+        if (is_string($content)) {
+            $formatted[] = [
+                'type' => $role === 'user' ? 'input_text' : 'output_text',
+                'text' => $content
+            ];
+        } elseif (is_array($content)) {
+            // Content is already structured (multimodal)
+            foreach ($content as $item) {
+                if (isset($item['type'])) {
+                    // Map Chat Completions types to Responses API types
+                    if ($item['type'] === 'text') {
+                        $formatted[] = [
+                            'type' => $role === 'user' ? 'input_text' : 'output_text',
+                            'text' => $item['text'] ?? ''
+                        ];
+                    } elseif ($item['type'] === 'image_url') {
+                        $formatted[] = [
+                            'type' => 'input_image',
+                            'image_url' => $item['image_url']
+                        ];
+                    } else {
+                        $formatted[] = $item; // Pass through unknown types
+                    }
+                } else {
+                    $formatted[] = $item;
                 }
             }
         }
         
-        return $messages;
+        // Attach files to last user message
+        if (!empty($files) && $role === 'user') {
+            foreach ($files as $file) {
+                if (is_array($file) && isset($file['type'], $file['data'])) {
+                    $formatted[] = $file;
+                } elseif (is_string($file) && file_exists($file)) {
+                    $mimeType = mime_content_type($file);
+                    
+                    if (str_starts_with($mimeType, 'image/')) {
+                        $formatted[] = [
+                            'type' => 'input_image',
+                            'image_url' => [
+                                'url' => 'data:' . $mimeType . ';base64,' . base64_encode(file_get_contents($file))
+                            ]
+                        ];
+                    }
+                }
+            }
+        }
+        
+        return $formatted;
     }
 
     private function processTools(array $tools): array
@@ -635,33 +728,6 @@ class AIResponsesService
         }, $tools);
     }
 
-    private function attachFilesToContent(string|array $content, array $files): array
-    {
-        // Initialize content array based on input type
-        $contentArray = is_string($content) 
-            ? [['type' => 'text', 'text' => $content]]
-            : $content;
-        
-        foreach ($files as $file) {
-            if (is_array($file) && isset($file['type'], $file['data'])) {
-                $contentArray[] = $file;
-            } elseif (is_string($file) && file_exists($file)) {
-                $mimeType = mime_content_type($file);
-                
-                if (str_starts_with($mimeType, 'image/')) {
-                    $contentArray[] = [
-                        'type' => 'image_url',
-                        'image_url' => [
-                            'url' => 'data:' . $mimeType . ';base64,' . base64_encode(file_get_contents($file))
-                        ]
-                    ];
-                }
-            }
-        }
-        
-        return $contentArray;
-    }
-
     private function makeRequest(array $payload): array
     {
         $response = $this->getHttpClient()
@@ -675,7 +741,75 @@ class AIResponsesService
             $response->throw();
         }
 
-        return $response->json();
+        $responsesData = $response->json();
+        
+        // Transform Responses API format to Chat Completions-like format for backward compatibility
+        return $this->transformResponseToChatFormat($responsesData);
+    }
+    
+    /**
+     * Transform Responses API response to Chat Completions-like format
+     * This provides backward compatibility with existing code
+     */
+    private function transformResponseToChatFormat(array $responsesData): array
+    {
+        $transformed = [
+            'id' => $responsesData['id'] ?? null,
+            'object' => 'chat.completion', // Maintain Chat Completions object type
+            'created' => $responsesData['created'] ?? time(),
+            'model' => $responsesData['model'] ?? 'unknown',
+            'choices' => [],
+            'usage' => $responsesData['usage'] ?? []
+        ];
+        
+        // Extract output_text for simple text responses
+        $messageContent = $responsesData['output_text'] ?? '';
+        
+        // Check for function calls in output
+        $output = $responsesData['output'] ?? [];
+        $toolCalls = [];
+        
+        foreach ($output as $item) {
+            if (($item['type'] ?? null) === 'function_call') {
+                $toolCalls[] = [
+                    'id' => $item['call_id'] ?? $item['id'] ?? 'unknown',
+                    'type' => 'function',
+                    'function' => [
+                        'name' => $item['name'] ?? '',
+                        'arguments' => $item['arguments'] ?? '{}'
+                    ]
+                ];
+            } elseif (($item['type'] ?? null) === 'message' && empty($messageContent)) {
+                // Extract text from message item if output_text wasn't present
+                $content = $item['content'] ?? [];
+                foreach ($content as $contentItem) {
+                    if (($contentItem['type'] ?? null) === 'output_text') {
+                        $messageContent .= $contentItem['text'] ?? '';
+                    }
+                }
+            }
+        }
+        
+        // Build message object
+        $message = ['role' => 'assistant'];
+        
+        if (!empty($toolCalls)) {
+            $message['tool_calls'] = $toolCalls;
+            // Tool calls may not have content
+            if (!empty($messageContent)) {
+                $message['content'] = $messageContent;
+            }
+        } else {
+            $message['content'] = $messageContent;
+        }
+        
+        $transformed['choices'][] = [
+            'index' => 0,
+            'message' => $message,
+            'finish_reason' => ($responsesData['status'] ?? 'completed') === 'requires_action' ? 'tool_calls' : 'stop'
+        ];
+        
+        return $transformed;
     }
 
     private function makeStreamingRequest(array $payload): \Generator
@@ -852,6 +986,10 @@ class AIResponsesService
         return $this->config['tools']['auto_execute'] ?? true;
     }
 
+    /**
+     * Execute tool loop for Responses API
+     * Handles function_call items and creates function_call_output items
+     */
     private function executeToolLoop(array $initialMessages, array $response, array $options, string $requestId): array
     {
         $messages = $initialMessages;
@@ -861,39 +999,26 @@ class AIResponsesService
         while ($iteration < $maxIterations) {
             $iteration++;
             
-            // Guard against malformed response structure
-            $choice = $response['choices'][0] ?? null;
-            $assistant = $choice['message'] ?? null;
-            
-            if (!$assistant) {
-                break;
-            }
-            
-            $toolCalls = $assistant['tool_calls'] ?? [];
+            // Check for function_call items in Responses API output
+            $output = $response['output'] ?? [];
+            $functionCalls = array_filter($output, fn($item) => ($item['type'] ?? null) === 'function_call');
             
             // If no tool calls, we're done
-            if (empty($toolCalls)) {
+            if (empty($functionCalls)) {
                 break;
             }
             
-            // Add assistant's message with tool calls to conversation
-            $messages[] = $assistant;
-            
-            // Execute each tool call
-            foreach ($toolCalls as $toolCall) {
-                if (($toolCall['type'] ?? null) !== 'function') {
-                    continue;
-                }
+            // Execute each function call
+            foreach ($functionCalls as $functionCall) {
+                $callId = $functionCall['call_id'] ?? $functionCall['id'] ?? null;
+                $functionName = $functionCall['name'] ?? null;
+                $rawArgs = $functionCall['arguments'] ?? '{}';
                 
-                $functionName = $toolCall['function']['name'] ?? null;
-                $rawArgs = $toolCall['function']['arguments'] ?? '{}';
-                $toolCallId = $toolCall['id'] ?? null;
-                
-                if (!$functionName) {
+                if (!$functionName || !$callId) {
                     $messages[] = [
-                        'role' => 'tool',
-                        'tool_call_id' => $toolCallId,
-                        'content' => 'Error: Missing function name in tool call'
+                        'type' => 'function_call_output',
+                        'call_id' => $callId ?? 'unknown',
+                        'output' => json_encode(['error' => 'Missing function name or call_id'])
                     ];
                     continue;
                 }
@@ -902,9 +1027,9 @@ class AIResponsesService
                 $arguments = json_decode($rawArgs, true);
                 if (json_last_error() !== JSON_ERROR_NONE) {
                     $messages[] = [
-                        'role' => 'tool',
-                        'tool_call_id' => $toolCallId,
-                        'content' => 'Error parsing tool arguments: ' . json_last_error_msg()
+                        'type' => 'function_call_output',
+                        'call_id' => $callId,
+                        'output' => json_encode(['error' => 'Error parsing arguments: ' . json_last_error_msg()])
                     ];
                     continue;
                 }
@@ -915,26 +1040,26 @@ class AIResponsesService
                     
                     // Safely serialize result
                     if (is_string($result)) {
-                        $content = $result;
+                        $output = $result;
                     } else {
                         try {
-                            $content = json_encode($result, JSON_THROW_ON_ERROR);
+                            $output = json_encode($result, JSON_THROW_ON_ERROR);
                         } catch (\JsonException $je) {
-                            $content = 'Error serializing tool result: ' . $je->getMessage();
+                            $output = json_encode(['error' => 'Error serializing result: ' . $je->getMessage()]);
                         }
                     }
                     
                     $messages[] = [
-                        'role' => 'tool',
-                        'tool_call_id' => $toolCallId,
-                        'content' => $content
+                        'type' => 'function_call_output',
+                        'call_id' => $callId,
+                        'output' => $output
                     ];
                 } catch (\Exception $e) {
                     // Add error as tool result
                     $messages[] = [
-                        'role' => 'tool',
-                        'tool_call_id' => $toolCallId,
-                        'content' => 'Error executing tool: ' . $e->getMessage()
+                        'type' => 'function_call_output',
+                        'call_id' => $callId,
+                        'output' => json_encode(['error' => 'Error executing tool: ' . $e->getMessage()])
                     ];
                 }
             }

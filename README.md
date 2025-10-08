@@ -4,10 +4,12 @@ A Laravel package for working with OpenAI's Responses API with minimal overhead.
 
 ## Features
 
-- **Simple API**: `respond()`, `stream()`, `withTools()`, `withFiles()` methods
+- **Responses API**: Uses OpenAI's latest Responses API (`POST /v1/responses`) for better performance and future-proofing
+- **Simple API**: `respond()`, `stream()`, `withTools()`, `withFiles()` methods with backward-compatible interface
 - **Thread-Safe**: Immutable service instances prevent state mutation
 - **Input Validation**: Comprehensive validation for security and reliability
-- **Tool Registry**: Register and manage tools with limits
+- **Function Calling**: Automatic tool execution with `function_call` and `function_call_output` support
+- **Vector Store Support**: Native `tool_resources` support for file_search and RAG applications
 - **Event System**: BeforeRequest, AfterResponse, ToolCalled, RateLimited events
 - **Streaming Support**: Memory-safe generator-based streaming with bounded buffers
 - **Smart Cost Calculation**: Model-specific pricing with automatic updates (Sep 2025)
@@ -157,6 +159,8 @@ $response = AIResponses::withFiles([
 
 ### With Vector Stores (File Search)
 
+The Responses API provides native support for `file_search` with vector stores:
+
 ```php
 use Atvardovsky\LaravelOpenAIResponses\Services\VectorStoreService;
 
@@ -164,7 +168,7 @@ use Atvardovsky\LaravelOpenAIResponses\Services\VectorStoreService;
 $vectorStore = app(VectorStoreService::class);
 $store = $vectorStore->create('Database Schema', ['file-abc123']);
 
-// Use file_search tool with vector store
+// Use file_search tool with vector store (Responses API feature)
 $response = AIResponses::respond([
     ['role' => 'user', 'content' => 'What tables are in the database?']
 ], [
@@ -178,6 +182,8 @@ $response = AIResponses::respond([
 
 echo $response['choices'][0]['message']['content'];
 ```
+
+**Note**: The package internally uses the Responses API (`POST /v1/responses`) but maintains a Chat Completions-compatible interface for easy migration.
 
 ### Chaining
 
