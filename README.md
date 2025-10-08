@@ -21,10 +21,19 @@ A Laravel package for working with OpenAI's Chat Completions API with minimal ov
 composer require atvardovsky/laravel-openai-responses-core
 ```
 
-Publish the configuration:
+Publish the configuration and run migrations:
 
 ```bash
 php artisan vendor:publish --provider="Atvardovsky\LaravelOpenAIResponses\AIResponsesServiceProvider" --tag="config"
+php artisan migrate
+```
+
+## Upgrading
+
+If upgrading from an earlier version, run migrations to apply database schema updates:
+
+```bash
+php artisan migrate
 ```
 
 ## Configuration
