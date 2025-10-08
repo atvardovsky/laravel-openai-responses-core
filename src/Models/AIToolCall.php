@@ -26,8 +26,14 @@ class AIToolCall extends Model
         'updated_at' => 'datetime',
     ];
 
+    /**
+     * Get the associated AI request (soft reference - no foreign key constraint)
+     * 
+     * @return BelongsTo
+     */
     public function aiRequest(): BelongsTo
     {
+        // Note: No foreign key constraint, so this relationship may return null
         return $this->belongsTo(AIRequest::class, 'request_id', 'request_id');
     }
 
