@@ -409,9 +409,12 @@ class AIResponsesService
             $this->validateFiles($files);
         }
         
+        // Responses API uses 'input' instead of 'messages'
+        $processedMessages = $this->processMessages($messages, $files);
+        
         $payload = [
             'model' => $this->getModel($options),
-            'messages' => $this->processMessages($messages, $files),
+            'input' => $processedMessages,
             'max_tokens' => $this->getMaxTokens($options),
             'temperature' => $this->getTemperature($options),
         ];
