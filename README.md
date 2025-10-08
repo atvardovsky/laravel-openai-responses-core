@@ -35,7 +35,11 @@ Set your OpenAI API key in `.env`:
 OPENAI_API_KEY=your-api-key-here
 OPENAI_DEFAULT_MODEL=gpt-4o
 OPENAI_TIMEOUT=30
+
+# Logging & Analytics
+OPENAI_LOGGING_ENABLED=true
 OPENAI_METRICS_ENABLED=true
+OPENAI_ANALYTICS_ENABLED=true
 
 # Validation limits
 OPENAI_MAX_MESSAGE_LENGTH=100000

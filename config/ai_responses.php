@@ -28,16 +28,6 @@ return [
     
     /*
     |--------------------------------------------------------------------------
-    | Rate Limiting & Quotas
-    |--------------------------------------------------------------------------
-    */
-    'quotas' => [
-        'requests_per_minute' => env('OPENAI_REQUESTS_PER_MINUTE', 60),
-        'tokens_per_minute' => env('OPENAI_TOKENS_PER_MINUTE', 100000),
-    ],
-    
-    /*
-    |--------------------------------------------------------------------------
     | Metrics & Monitoring
     |--------------------------------------------------------------------------
     */
@@ -54,11 +44,6 @@ return [
     */
     'logging' => [
         'enabled' => env('OPENAI_LOGGING_ENABLED', true),
-        'channels' => [
-            'database' => env('OPENAI_LOG_DATABASE', true),
-            'file' => env('OPENAI_LOG_FILE', false),
-            'custom' => env('OPENAI_LOG_CUSTOM', null),
-        ],
         'log_requests' => env('OPENAI_LOG_REQUESTS', true),
         'log_responses' => env('OPENAI_LOG_RESPONSES', true),
         'log_tools' => env('OPENAI_LOG_TOOLS', true),
@@ -81,7 +66,6 @@ return [
         'chunk_size' => env('OPENAI_STREAM_CHUNK_SIZE', 1024),
         'max_buffer_size' => env('OPENAI_MAX_BUFFER_SIZE', 64 * 1024), // 64KB
         'max_total_size' => env('OPENAI_MAX_TOTAL_SIZE', 10 * 1024 * 1024), // 10MB
-        'buffer_size' => env('OPENAI_STREAM_BUFFER_SIZE', 0), // No buffering by default
     ],
     
     /*
@@ -104,7 +88,6 @@ return [
     'files' => [
         'max_size' => env('OPENAI_MAX_FILE_SIZE', 20 * 1024 * 1024), // 20MB
         'allowed_types' => ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
-        'temp_path' => env('OPENAI_TEMP_PATH', storage_path('temp/ai-files')),
     ],
     
     /*

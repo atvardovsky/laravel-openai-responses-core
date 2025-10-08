@@ -113,10 +113,6 @@ class AILoggingService
 
     private function storeToDatabase(array $data): void
     {
-        if (!($this->config['logging']['channels']['database'] ?? true)) {
-            return;
-        }
-
         try {
             AIRequest::create($data);
         } catch (\Exception $e) {
@@ -129,10 +125,6 @@ class AILoggingService
 
     private function updateDatabase(string $requestId, array $data): void
     {
-        if (!($this->config['logging']['channels']['database'] ?? true)) {
-            return;
-        }
-
         try {
             AIRequest::where('request_id', $requestId)->update($data);
         } catch (\Exception $e) {
@@ -146,11 +138,8 @@ class AILoggingService
 
     private function storeToFile(string $type, array $data): void
     {
-        if (!($this->config['logging']['channels']['file'] ?? false)) {
-            return;
-        }
-
-        Log::channel('single')->info("AI {$type}", $data);
+        // Simplified file logging using default channel
+        Log::info("AI {$type}", $data);
     }
 
     private function sanitizeData(mixed $data): mixed
