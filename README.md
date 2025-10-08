@@ -155,6 +155,30 @@ $response = AIResponses::withFiles([
 ]);
 ```
 
+### With Vector Stores (File Search)
+
+```php
+use Atvardovsky\LaravelOpenAIResponses\Services\VectorStoreService;
+
+// Create a vector store with uploaded files
+$vectorStore = app(VectorStoreService::class);
+$store = $vectorStore->create('Database Schema', ['file-abc123']);
+
+// Use file_search tool with vector store
+$response = AIResponses::respond([
+    ['role' => 'user', 'content' => 'What tables are in the database?']
+], [
+    'tools' => [['type' => 'file_search']],
+    'tool_resources' => [
+        'file_search' => [
+            'vector_store_ids' => [$store['id']]
+        ]
+    ]
+]);
+
+echo $response['choices'][0]['message']['content'];
+```
+
 ### Chaining
 
 ```php
@@ -184,6 +208,36 @@ Event::listen(AfterResponse::class, function ($event) {
     ]);
 });
 ```
+
+## API Reference
+
+### Request Options
+
+The `respond()` and `stream()` methods accept an optional array of options:
+
+```php
+$response = AIResponses::respond($messages, [
+    'model' => 'gpt-4o-mini',           // Override default model
+    'temperature' => 0.9,                // Control randomness (0-2)
+    'max_tokens' => 2000,                // Limit response length
+    'tools' => [['type' => 'function']], // Enable tools/functions
+    'tool_resources' => [                // Attach vector stores for file_search
+        'file_search' => [
+            'vector_store_ids' => ['vs_abc123']
+        ]
+    ],
+    'auto_execute_tools' => true,        // Auto-execute tool calls (default: true)
+    'stream' => false                     // Enable streaming (auto-set by stream())
+]);
+```
+
+**Key Options:**
+- **`model`**: Override default model (gpt-4o, gpt-4o-mini, etc.)
+- **`temperature`**: Control creativity (0 = deterministic, 2 = very creative)
+- **`max_tokens`**: Maximum tokens in response
+- **`tools`**: Array of tool definitions or registered tool names
+- **`tool_resources`**: Attach resources like vector stores (required for `file_search`)
+- **`auto_execute_tools`**: Whether to automatically execute tool calls in a loop
 
 ## Error Handling
 

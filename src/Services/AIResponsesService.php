@@ -420,6 +420,11 @@ class AIResponsesService
             $payload['tools'] = $this->processTools($tools);
         }
 
+        // Add tool_resources for file_search and other tools that require vector stores
+        if (isset($options['tool_resources'])) {
+            $payload['tool_resources'] = $options['tool_resources'];
+        }
+
         if ($options['stream'] ?? false) {
             $payload['stream'] = true;
             $payload['stream_options'] = ['include_usage' => true];
