@@ -398,7 +398,7 @@ class AIResponsesService
         $this->validateOptions($options);
         
         // Merge default tools/files with options
-        $tools = array_values(array_unique([...$this->defaultTools, ...($options['tools'] ?? [])]));
+        $tools = array_values(array_unique([...$this->defaultTools, ...($options['tools'] ?? [])], SORT_REGULAR));
         $files = array_merge($this->defaultFiles, $options['files'] ?? []);
         
         if (!empty($tools)) {
