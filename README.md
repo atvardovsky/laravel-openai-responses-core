@@ -1,6 +1,6 @@
 # Laravel OpenAI Responses Core
 
-A Laravel package for working with OpenAI's Chat Completions API with minimal overhead. Supports Laravel 11 and PHP 8.2+.
+A Laravel package for working with OpenAI's Responses API with minimal overhead. Supports Laravel 11 and PHP 8.2+.
 
 ## Features
 

@@ -614,7 +614,7 @@ class AIResponsesService
                 ];
             }
             
-            // Handle array tools (custom function definitions for Chat Completions)
+            // Handle array tools (custom function definitions for Responses API)
             if (is_array($tool)) {
                 // If it's already a full tool definition (has 'type'), return as-is
                 if (isset($tool['type'])) {
@@ -662,7 +662,7 @@ class AIResponsesService
     private function makeRequest(array $payload): array
     {
         $response = $this->getHttpClient()
-            ->post('/chat/completions', $payload);
+            ->post('/responses', $payload);
 
         if (!$response->successful()) {
             if ($response->status() === 429) {
@@ -685,7 +685,7 @@ class AIResponsesService
                 'stream' => true,
                 'buffer' => false,
             ])
-            ->post('/chat/completions', $payload);
+            ->post('/responses', $payload);
 
         if (!$stream->successful()) {
             if ($stream->status() === 429) {
