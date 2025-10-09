@@ -727,34 +727,29 @@ class AIResponsesService
             // Handle string tool names (registered functions)
             if (is_string($tool) && $this->toolRegistry->isRegistered($tool)) {
                 $schema = $this->toolRegistry->getSchema($tool);
-                // Responses API expects tools with 'name' at root level, not nested in 'function'
-                return $schema;
+                // Responses API expects: {"type": "function", "name": "...", "description": "...", "parameters": {...}}
+                return array_merge(['type' => 'function'], $schema);
             }
             
             // Handle array tools
             if (is_array($tool)) {
-                // If it's file_search or other built-in tools, return as-is
-                if (isset($tool['type']) && $tool['type'] === 'file_search') {
+                // If it's file_search or other built-in tools (has type but no name), return as-is
+                if (isset($tool['type']) && !isset($tool['name'])) {
                     return $tool;
                 }
                 
-                // If it has 'type' => 'function', unwrap to root level
-                if (isset($tool['type']) && $tool['type'] === 'function' && isset($tool['function'])) {
-                    return $tool['function'];
+                // If it has 'name' but no 'type', it's a function schema - add type
+                if (isset($tool['name']) && !isset($tool['type'])) {
+                    return array_merge(['type' => 'function'], $tool);
                 }
                 
-                // If it already has 'name' at root, it's correct format
-                if (isset($tool['name'])) {
-                    return $tool;
-                }
-                
-                // Otherwise it's a partial function definition with 'type'
+                // If it has both 'type' and either 'name' or is complete, return as-is
                 if (isset($tool['type'])) {
                     return $tool;
                 }
                 
-                // Assume it's a raw function schema, return as-is
-                return $tool;
+                // Fallback: assume it's a function schema without type
+                return array_merge(['type' => 'function'], $tool);
             }
             
             return $tool;
