@@ -726,24 +726,35 @@ class AIResponsesService
         return array_map(function ($tool) {
             // Handle string tool names (registered functions)
             if (is_string($tool) && $this->toolRegistry->isRegistered($tool)) {
-                return [
-                    'type' => 'function',
-                    'function' => $this->toolRegistry->getSchema($tool)
-                ];
+                $schema = $this->toolRegistry->getSchema($tool);
+                // Responses API expects tools with 'name' at root level, not nested in 'function'
+                return $schema;
             }
             
-            // Handle array tools (custom function definitions for Responses API)
+            // Handle array tools
             if (is_array($tool)) {
-                // If it's already a full tool definition (has 'type'), return as-is
+                // If it's file_search or other built-in tools, return as-is
+                if (isset($tool['type']) && $tool['type'] === 'file_search') {
+                    return $tool;
+                }
+                
+                // If it has 'type' => 'function', unwrap to root level
+                if (isset($tool['type']) && $tool['type'] === 'function' && isset($tool['function'])) {
+                    return $tool['function'];
+                }
+                
+                // If it already has 'name' at root, it's correct format
+                if (isset($tool['name'])) {
+                    return $tool;
+                }
+                
+                // Otherwise it's a partial function definition with 'type'
                 if (isset($tool['type'])) {
                     return $tool;
                 }
                 
-                // Otherwise assume it's a function definition and wrap it
-                return [
-                    'type' => 'function',
-                    'function' => $tool
-                ];
+                // Assume it's a raw function schema, return as-is
+                return $tool;
             }
             
             return $tool;
