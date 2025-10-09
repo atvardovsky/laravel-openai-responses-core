@@ -20,10 +20,13 @@ class AILoggingService
             return $requestId;
         }
 
+        // Normalize input for logging (Responses API uses 'input', Chat Completions uses 'messages')
+        $inputData = $payload['input'] ?? $payload['messages'] ?? [];
+        
         $data = [
             'request_id' => $requestId,
             'model' => $payload['model'] ?? 'unknown',
-            'messages' => $this->sanitizeData($payload['messages'] ?? []),
+            'messages' => $this->sanitizeData($inputData), // Store in 'messages' column for compatibility
             'options' => $this->sanitizeData($options),
             'tools' => $payload['tools'] ?? null,
             'files' => $this->extractFileInfo($options['files'] ?? []),

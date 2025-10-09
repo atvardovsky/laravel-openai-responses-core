@@ -111,8 +111,10 @@ class AIResponsesService
      * @param array $options Optional request parameters:
      *                      - 'model' (string): OpenAI model to use (defaults to config default)
      *                      - 'temperature' (float): 0.0-2.0 sampling temperature
-     *                      - 'max_tokens' (int): Maximum tokens in response
+     *                      - 'max_tokens' or 'max_output_tokens' (int): Maximum tokens in response
      *                      - 'tools' (array): Array of tool names or tool definitions
+     *                      - 'tool_resources' (array): Vector stores for file_search
+     *                      - 'auto_execute_tools' (bool): Auto-execute tool calls (default: true)
      *                      - 'files' (array): Array of file paths for vision/analysis
      * 
      * @return array Complete OpenAI API response including:
@@ -241,7 +243,7 @@ class AIResponsesService
             foreach ($this->makeStreamingRequest($context['payload']) as $chunk) {
                 $chunkCount++;
                 
-                // Capture usage data from final chunk (when stream_options.include_usage is true)
+                // Capture usage data from final chunk (when stream.include_usage is true)
                 if (isset($chunk['usage'])) {
                     $usageData = $chunk;
                 }
@@ -415,12 +417,13 @@ class AIResponsesService
         $payload = [
             'model' => $this->getModel($options),
             'input' => $processedMessages,
-            'max_tokens' => $this->getMaxTokens($options),
+            'max_output_tokens' => $this->getMaxTokens($options), // Responses API parameter
             'temperature' => $this->getTemperature($options),
         ];
 
         if (!empty($tools)) {
             $payload['tools'] = $this->processTools($tools);
+            $payload['tool_choice'] = 'auto'; // Responses API requires explicit tool_choice
         }
 
         // Add tool_resources for file_search and other tools that require vector stores
@@ -429,8 +432,11 @@ class AIResponsesService
         }
 
         if ($options['stream'] ?? false) {
-            $payload['stream'] = true;
-            $payload['stream_options'] = ['include_usage' => true];
+            // Responses API streaming format
+            $payload['stream'] = [
+                'type' => 'sse',
+                'include_usage' => true
+            ];
         }
 
         return [
@@ -571,8 +577,10 @@ class AIResponsesService
             throw new AIResponseException('Temperature must be between 0 and 2');
         }
         
-        if (isset($options['max_tokens']) && $options['max_tokens'] < 1) {
-            throw new AIResponseException('max_tokens must be greater than 0');
+        // Support both max_output_tokens (Responses API) and max_tokens (backward compat)
+        $maxTokens = $options['max_output_tokens'] ?? $options['max_tokens'] ?? null;
+        if ($maxTokens !== null && $maxTokens < 1) {
+            throw new AIResponseException('max_output_tokens must be greater than 0');
         }
     }
 
@@ -583,7 +591,11 @@ class AIResponsesService
 
     private function getMaxTokens(array $options): int
     {
-        return $options['max_tokens'] ?? $this->config['max_tokens'] ?? 4000;
+        // Prefer max_output_tokens (Responses API), fall back to max_tokens (backward compat)
+        return $options['max_output_tokens'] 
+            ?? $options['max_tokens'] 
+            ?? $this->config['max_tokens'] 
+            ?? 4000;
     }
 
     private function getTemperature(array $options): float
@@ -616,12 +628,19 @@ class AIResponsesService
                     'content' => $this->formatContent($content, $files, $role)
                 ];
             } elseif ($role === 'assistant') {
-                // Assistant messages with tool_calls need special handling
+                // Assistant messages with tool_calls: skip the function_call items but keep any text
                 if (isset($message['tool_calls'])) {
-                    // Skip - tool calls will be reconstructed from conversation history
+                    // Only include the message if it has textual content alongside tool_calls
+                    if (!empty($content)) {
+                        $inputItems[] = [
+                            'role' => 'assistant',
+                            'content' => $this->formatContent($content, [], $role)
+                        ];
+                    }
                     continue;
                 }
                 
+                // Regular assistant message without tool_calls
                 $inputItems[] = [
                     'role' => 'assistant',
                     'content' => $this->formatContent($content, [], $role)
@@ -648,8 +667,10 @@ class AIResponsesService
         
         // Handle string content
         if (is_string($content)) {
+            // user/developer/system = input_text, assistant = output_text
+            $type = ($role === 'assistant') ? 'output_text' : 'input_text';
             $formatted[] = [
-                'type' => $role === 'user' ? 'input_text' : 'output_text',
+                'type' => $type,
                 'text' => $content
             ];
         } elseif (is_array($content)) {
@@ -658,8 +679,9 @@ class AIResponsesService
                 if (isset($item['type'])) {
                     // Map Chat Completions types to Responses API types
                     if ($item['type'] === 'text') {
+                        $type = ($role === 'assistant') ? 'output_text' : 'input_text';
                         $formatted[] = [
-                            'type' => $role === 'user' ? 'input_text' : 'output_text',
+                            'type' => $type,
                             'text' => $item['text'] ?? ''
                         ];
                     } elseif ($item['type'] === 'image_url') {
@@ -753,13 +775,24 @@ class AIResponsesService
      */
     private function transformResponseToChatFormat(array $responsesData): array
     {
+        // Map Responses API usage field to Chat Completions format
+        $usage = $responsesData['usage'] ?? [];
+        $mappedUsage = [
+            'prompt_tokens' => $usage['input_tokens'] ?? $usage['prompt_tokens'] ?? 0,
+            'completion_tokens' => $usage['output_tokens'] ?? $usage['completion_tokens'] ?? 0,
+            'total_tokens' => $usage['total_tokens'] ?? 0
+        ];
+        if ($mappedUsage['total_tokens'] === 0 && ($mappedUsage['prompt_tokens'] > 0 || $mappedUsage['completion_tokens'] > 0)) {
+            $mappedUsage['total_tokens'] = $mappedUsage['prompt_tokens'] + $mappedUsage['completion_tokens'];
+        }
+        
         $transformed = [
             'id' => $responsesData['id'] ?? null,
             'object' => 'chat.completion', // Maintain Chat Completions object type
             'created' => $responsesData['created'] ?? time(),
             'model' => $responsesData['model'] ?? 'unknown',
             'choices' => [],
-            'usage' => $responsesData['usage'] ?? []
+            'usage' => $mappedUsage
         ];
         
         // Extract output_text for simple text responses
@@ -771,12 +804,18 @@ class AIResponsesService
         
         foreach ($output as $item) {
             if (($item['type'] ?? null) === 'function_call') {
+                $args = $item['arguments'] ?? '{}';
+                // Ensure arguments are JSON string for Chat Completions compatibility
+                if (is_array($args)) {
+                    $args = json_encode($args);
+                }
+                
                 $toolCalls[] = [
                     'id' => $item['call_id'] ?? $item['id'] ?? 'unknown',
                     'type' => 'function',
                     'function' => [
                         'name' => $item['name'] ?? '',
-                        'arguments' => $item['arguments'] ?? '{}'
+                        'arguments' => $args
                     ]
                 ];
             } elseif (($item['type'] ?? null) === 'message' && empty($messageContent)) {
@@ -803,10 +842,25 @@ class AIResponsesService
             $message['content'] = $messageContent;
         }
         
+        // Map Responses API status to Chat Completions finish_reason
+        $status = $responsesData['status'] ?? 'completed';
+        $finishReason = match($status) {
+            'requires_action' => 'tool_calls',
+            'incomplete' => 'length', // max_output_tokens reached
+            'completed' => 'stop',
+            default => 'stop'
+        };
+        
+        // Check for refusal
+        if (isset($responsesData['refusal']) && !empty($responsesData['refusal'])) {
+            $finishReason = 'content_filter';
+            $message['refusal'] = $responsesData['refusal'];
+        }
+        
         $transformed['choices'][] = [
             'index' => 0,
             'message' => $message,
-            'finish_reason' => ($responsesData['status'] ?? 'completed') === 'requires_action' ? 'tool_calls' : 'stop'
+            'finish_reason' => $finishReason
         ];
         
         return $transformed;

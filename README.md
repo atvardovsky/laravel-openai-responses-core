@@ -92,7 +92,7 @@ foreach (AIResponses::stream([
 }
 
 // Note: Usage metrics (tokens/cost) are automatically included in streaming 
-// via stream_options when metrics are enabled in configuration
+// via stream.include_usage when metrics are enabled in configuration
 ```
 
 ### With Tools (Function Calling)

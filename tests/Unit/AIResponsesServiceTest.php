@@ -123,7 +123,7 @@ class AIResponsesServiceTest extends TestCase
         );
 
         $this->expectException(AIResponseException::class);
-        $this->expectExceptionMessage('max_tokens must be greater than 0');
+        $this->expectExceptionMessage('max_output_tokens must be greater than 0');
         
         $service->respond([
             ['role' => 'user', 'content' => 'test']

@@ -21,7 +21,7 @@ use Illuminate\Foundation\Events\Dispatchable;
  *     Log::info('AI request started', [
  *         'request_id' => $event->requestId,
  *         'model' => $event->payload['model'],
- *         'message_count' => count($event->payload['messages'])
+ *         'input_count' => count($event->payload['input'] ?? [])
  *     ]);
  * });
  * ```
@@ -31,20 +31,22 @@ class BeforeRequest
     use Dispatchable;
 
     /**
-     * Create a new BeforeRequest event.
-     *
-     * @param array $payload Complete OpenAI API payload including:
-     *                      - 'model' (string): Model name
-     *                      - 'messages' (array): Conversation messages
-     *                      - 'temperature' (float): Sampling temperature
-     *                      - 'max_tokens' (int): Maximum response tokens
-     *                      - 'tools' (array): Available tools (if any)
-     *                      - 'stream' (bool): Whether streaming is enabled
-     * @param array $options Original options passed to respond() or stream()
-     * @param string|null $requestId Unique identifier for this request
-     * 
-     * @since 1.0.0
-     */
+    * Create a new BeforeRequest event.
+    *
+    * @param array $payload Complete Responses API payload including:
+    *                      - 'model' (string): Model name
+    *                      - 'input' (array): Input items with typed content
+    *                      - 'temperature' (float): Sampling temperature
+    *                      - 'max_output_tokens' (int): Maximum response tokens
+    *                      - 'tools' (array): Available tools (if any)
+    *                      - 'tool_choice' (string): Tool selection mode
+    *                      - 'tool_resources' (array): Vector stores, etc.
+    *                      - 'stream' (array|bool): Streaming configuration
+    * @param array $options Original options passed to respond() or stream()
+    * @param string|null $requestId Unique identifier for this request
+    * 
+      * @since 1.0.0
+      */
     public function __construct(
         public array $payload,
         public array $options = [],
