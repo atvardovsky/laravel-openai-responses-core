@@ -159,23 +159,20 @@ $response = AIResponses::withFiles([
 
 ### With Vector Stores (File Search)
 
-The Responses API provides native support for `file_search` with vector stores:
+The Responses API supports `file_search` with vector store IDs passed directly in the tools array:
 
 ```php
-use Atvardovsky\LaravelOpenAIResponses\Services\VectorStoreService;
+// Assuming you have a vector store ID from OpenAI
+$vectorStoreId = 'vs_abc123';
 
-// Create a vector store with uploaded files
-$vectorStore = app(VectorStoreService::class);
-$store = $vectorStore->create('Database Schema', ['file-abc123']);
-
-// Use file_search tool with vector store (Responses API feature)
+// Use file_search tool - vector_store_ids go inside the tool definition
 $response = AIResponses::respond([
     ['role' => 'user', 'content' => 'What tables are in the database?']
 ], [
-    'tools' => [['type' => 'file_search']],
-    'tool_resources' => [
-        'file_search' => [
-            'vector_store_ids' => [$store['id']]
+    'tools' => [
+        [
+            'type' => 'file_search',
+            'vector_store_ids' => [$vectorStoreId]  // IDs passed here, not in tool_resources
         ]
     ]
 ]);
@@ -226,23 +223,21 @@ $response = AIResponses::respond($messages, [
     'model' => 'gpt-4o-mini',           // Override default model
     'temperature' => 0.9,                // Control randomness (0-2)
     'max_tokens' => 2000,                // Limit response length
-    'tools' => [['type' => 'function']], // Enable tools/functions
-    'tool_resources' => [                // Attach vector stores for file_search
-        'file_search' => [
+    'tools' => [                         // Enable tools/functions
+        [
+            'type' => 'file_search',
             'vector_store_ids' => ['vs_abc123']
         ]
     ],
     'auto_execute_tools' => true,        // Auto-execute tool calls (default: true)
-    'stream' => false                     // Enable streaming (auto-set by stream())
 ]);
 ```
 
 **Key Options:**
 - **`model`**: Override default model (gpt-4o, gpt-4o-mini, etc.)
 - **`temperature`**: Control creativity (0 = deterministic, 2 = very creative)
-- **`max_tokens`**: Maximum tokens in response
-- **`tools`**: Array of tool definitions or registered tool names
-- **`tool_resources`**: Attach resources like vector stores (required for `file_search`)
+- **`max_tokens`**: Maximum tokens in response (mapped to `max_output_tokens` internally)
+- **`tools`**: Array of tool definitions. For `file_search`, include `vector_store_ids` in the tool object
 - **`auto_execute_tools`**: Whether to automatically execute tool calls in a loop
 
 ## Error Handling

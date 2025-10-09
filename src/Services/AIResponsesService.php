@@ -112,8 +112,7 @@ class AIResponsesService
      *                      - 'model' (string): OpenAI model to use (defaults to config default)
      *                      - 'temperature' (float): 0.0-2.0 sampling temperature
      *                      - 'max_tokens' or 'max_output_tokens' (int): Maximum tokens in response
-     *                      - 'tools' (array): Array of tool names or tool definitions
-     *                      - 'tool_resources' (array): Vector stores for file_search
+     *                      - 'tools' (array): Array of tool definitions. For file_search, include vector_store_ids in tool object
      *                      - 'auto_execute_tools' (bool): Auto-execute tool calls (default: true)
      *                      - 'files' (array): Array of file paths for vision/analysis
      * 
@@ -426,17 +425,8 @@ class AIResponsesService
             $payload['tool_choice'] = 'auto'; // Responses API requires explicit tool_choice
         }
 
-        // Add tool_resources for file_search and other tools that require vector stores
-        if (isset($options['tool_resources'])) {
-            $payload['tool_resources'] = $options['tool_resources'];
-        }
-
         if ($options['stream'] ?? false) {
-            // Responses API streaming format
-            $payload['stream'] = [
-                'type' => 'sse',
-                'include_usage' => true
-            ];
+            $payload['stream'] = true;
         }
 
         return [
@@ -612,7 +602,17 @@ class AIResponsesService
         $inputItems = [];
         
         foreach ($messages as $message) {
-            $role = $message['role'];
+            // If message already has 'type' (already formatted for Responses API), pass through
+            if (isset($message['type'])) {
+                $inputItems[] = $message;
+                continue;
+            }
+            
+            $role = $message['role'] ?? null;
+            if (!$role) {
+                continue; // Skip messages without role
+            }
+            
             $content = $message['content'] ?? null;
             
             // Handle different message types for Responses API
