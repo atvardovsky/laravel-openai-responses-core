@@ -422,12 +422,22 @@ class AIResponsesService
 
         if (!empty($tools)) {
             $payload['tools'] = $this->processTools($tools);
-            $payload['tool_choice'] = 'auto'; // Responses API requires explicit tool_choice
+            $payload['tool_choice'] = $options['tool_choice'] ?? 'required'; // Force tool usage for DB queries
+            $payload['parallel_tool_calls'] = $options['parallel_tool_calls'] ?? true; // CRITICAL: Enable multiple tool calls
         }
 
         if ($options['stream'] ?? false) {
             $payload['stream'] = true;
         }
+        
+        // DEBUG: Log payload to verify parallel_tool_calls is set
+        \Log::info('🔧 AI REQUEST PAYLOAD', [
+            'has_tools' => !empty($tools),
+            'tool_count' => count($tools ?? []),
+            'tool_choice' => $payload['tool_choice'] ?? 'none',
+            'parallel_tool_calls' => $payload['parallel_tool_calls'] ?? false,
+            'tools' => array_map(fn($t) => $t['name'] ?? $t['type'] ?? 'unknown', $payload['tools'] ?? [])
+        ]);
 
         return [
             'payload' => $payload,
