@@ -10,9 +10,13 @@ yarn-error.log
 .DS_Store
 Thumbs.db
 
-# AI Agent Documentation
+# AI Agent Documentation (development/debugging only)
 AGENTS.md
 AGENT.md
+DOCUMENTATION_STATUS.md
+FINAL_VERIFICATION_CHECKLIST.md
+RESPONSES_API_VERIFICATION.md
+RESPONSES_API_MIGRATION.md
 .amp/
 .cursor/
 .aider*

@@ -422,7 +422,7 @@ class AIResponsesService
 
         if (!empty($tools)) {
             $payload['tools'] = $this->processTools($tools);
-            $payload['tool_choice'] = $options['tool_choice'] ?? 'required'; // Force tool usage for DB queries
+            $payload['tool_choice'] = $options['tool_choice'] ?? 'auto'; // Let AI decide when to use tools
             $payload['parallel_tool_calls'] = $options['parallel_tool_calls'] ?? true; // CRITICAL: Enable multiple tool calls
         }
 
@@ -551,22 +551,65 @@ class AIResponsesService
     {
         $allowedTypes = $this->config['files']['allowed_types'] ?? ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
         $maxSize = $this->config['files']['max_size'] ?? 20 * 1024 * 1024;
+        $maxCount = $this->config['files']['max_count'] ?? 10;
+
+        if (count($files) > $maxCount) {
+            throw new AIResponseException("Too many files: maximum {$maxCount} files allowed");
+        }
 
         foreach ($files as $file) {
             if (is_string($file)) {
+                // Validate file path
                 if (!file_exists($file)) {
                     throw new AIResponseException("File not found: {$file}");
                 }
                 
                 $size = filesize($file);
+                if ($size === false || $size <= 0) {
+                    throw new AIResponseException("Cannot read file size: {$file}");
+                }
+                
                 if ($size > $maxSize) {
-                    throw new AIResponseException("File too large: {$file} ({$size} bytes)");
+                    throw new AIResponseException("File too large: {$file} ({$size} bytes, max: {$maxSize})");
                 }
 
                 $mimeType = mime_content_type($file);
-                if (!in_array($mimeType, $allowedTypes)) {
+                if (!$mimeType || !in_array($mimeType, $allowedTypes, true)) {
                     throw new AIResponseException("File type not allowed: {$mimeType}");
                 }
+            } elseif (is_array($file)) {
+                // Validate pre-processed file arrays
+                if (isset($file['type']) && $file['type'] === 'image_url' && isset($file['image_url']['url'])) {
+                    $url = $file['image_url']['url'];
+                    
+                    // Only allow data: URIs for security (no remote fetching)
+                    if (!str_starts_with($url, 'data:')) {
+                        throw new AIResponseException("Only data: URIs are allowed for array files");
+                    }
+                    
+                    // Parse data URI: data:[<mediatype>][;base64],<data>
+                    if (!preg_match('/^data:([^;,]+)(?:;base64)?,(.+)$/', $url, $matches)) {
+                        throw new AIResponseException("Invalid data: URI format");
+                    }
+                    
+                    $mimeType = $matches[1];
+                    $data = $matches[2];
+                    
+                    // Validate MIME type
+                    if (!in_array($mimeType, $allowedTypes, true)) {
+                        throw new AIResponseException("File type not allowed in data URI: {$mimeType}");
+                    }
+                    
+                    // Estimate decoded size (base64 is ~1.37x larger than binary)
+                    $estimatedSize = strlen($data) * 0.75; // Rough estimate
+                    if ($estimatedSize > $maxSize) {
+                        throw new AIResponseException("File data too large: estimated {$estimatedSize} bytes, max: {$maxSize}");
+                    }
+                } else {
+                    throw new AIResponseException("Array files must have 'type' => 'image_url' and 'image_url' => ['url' => 'data:...']");
+                }
+            } else {
+                throw new AIResponseException("Files must be string paths or arrays with image_url structure");
             }
         }
     }
@@ -611,7 +654,16 @@ class AIResponsesService
     {
         $inputItems = [];
         
-        foreach ($messages as $message) {
+        // Find the last user message index to attach files only once
+        $lastUserIndex = null;
+        foreach (array_reverse(array_keys($messages), true) as $idx) {
+            if (($messages[$idx]['role'] ?? null) === 'user' && !isset($messages[$idx]['type'])) {
+                $lastUserIndex = $idx;
+                break;
+            }
+        }
+        
+        foreach ($messages as $index => $message) {
             // If message already has 'type' (already formatted for Responses API), pass through
             if (isset($message['type'])) {
                 $inputItems[] = $message;
@@ -625,22 +677,53 @@ class AIResponsesService
             
             $content = $message['content'] ?? null;
             
+            // Only attach files to the last user message to avoid duplication
+            $messageFiles = ($role === 'user' && $index === $lastUserIndex) ? $files : [];
+            
             // Handle different message types for Responses API
             if ($role === 'system') {
                 // System messages become developer role in Responses API
                 $inputItems[] = [
                     'role' => 'developer',
-                    'content' => $this->formatContent($content, $files, $role)
+                    'content' => $this->formatContent($content, [], $role)
                 ];
             } elseif ($role === 'user') {
                 $inputItems[] = [
                     'role' => 'user',
-                    'content' => $this->formatContent($content, $files, $role)
+                    'content' => $this->formatContent($content, $messageFiles, $role)
                 ];
             } elseif ($role === 'assistant') {
-                // Assistant messages with tool_calls: skip the function_call items but keep any text
+                // Assistant messages with tool_calls must be converted to function_call items for Responses API
                 if (isset($message['tool_calls'])) {
-                    // Only include the message if it has textual content alongside tool_calls
+                    // Convert each tool_call to function_call item
+                    foreach ($message['tool_calls'] as $toolCall) {
+                        $callId = $toolCall['id'] ?? null;
+                        $functionName = $toolCall['function']['name'] ?? null;
+                        
+                        if (!$callId || !$functionName) {
+                            throw new AIResponseException('Assistant tool_calls require non-empty id and function.name');
+                        }
+                        
+                        $arguments = $toolCall['function']['arguments'] ?? '{}';
+                        // Validate arguments is string or array
+                        if (is_array($arguments)) {
+                            try {
+                                $arguments = json_encode($arguments, JSON_THROW_ON_ERROR);
+                            } catch (\JsonException $e) {
+                                throw new AIResponseException('Failed to encode tool_call arguments: ' . $e->getMessage());
+                            }
+                        } elseif (!is_string($arguments)) {
+                            throw new AIResponseException('Tool_call arguments must be string or array');
+                        }
+                        
+                        $inputItems[] = [
+                            'type' => 'function_call',
+                            'call_id' => $callId,
+                            'name' => $functionName,
+                            'arguments' => $arguments
+                        ];
+                    }
+                    // Also include assistant content if present
                     if (!empty($content)) {
                         $inputItems[] = [
                             'role' => 'assistant',
@@ -657,10 +740,25 @@ class AIResponsesService
                 ];
             } elseif ($role === 'tool') {
                 // Tool messages become function_call_output items
+                $callId = $message['tool_call_id'] ?? null;
+                if (!$callId) {
+                    throw new AIResponseException('Tool messages require non-empty tool_call_id');
+                }
+                
+                // Encode output with error handling
+                $output = $content;
+                if (!is_string($output)) {
+                    try {
+                        $output = json_encode($content, JSON_THROW_ON_ERROR);
+                    } catch (\JsonException $e) {
+                        throw new AIResponseException('Failed to encode tool message content: ' . $e->getMessage());
+                    }
+                }
+                
                 $inputItems[] = [
                     'type' => 'function_call_output',
-                    'call_id' => $message['tool_call_id'] ?? 'unknown',
-                    'output' => is_string($content) ? $content : json_encode($content)
+                    'call_id' => $callId,
+                    'output' => $output
                 ];
             }
         }
@@ -708,12 +806,19 @@ class AIResponsesService
             }
         }
         
-        // Attach files to last user message
+        // Attach files (only called for last user message after fixes)
         if (!empty($files) && $role === 'user') {
             foreach ($files as $file) {
-                if (is_array($file) && isset($file['type'], $file['data'])) {
-                    $formatted[] = $file;
+                if (is_array($file)) {
+                    // Accept documented array format: {type: 'image_url', image_url: {url: '...'}}
+                    if (isset($file['type']) && $file['type'] === 'image_url' && isset($file['image_url']['url'])) {
+                        $formatted[] = [
+                            'type' => 'input_image',
+                            'image_url' => $file['image_url']
+                        ];
+                    }
                 } elseif (is_string($file) && file_exists($file)) {
+                    // Encode local file (already validated by validateFiles)
                     $mimeType = mime_content_type($file);
                     
                     if (str_starts_with($mimeType, 'image/')) {
@@ -1059,90 +1164,129 @@ class AIResponsesService
     /**
      * Execute tool loop for Responses API
      * Handles function_call items and creates function_call_output items
+     * FIXED: Properly re-sends tools on each iteration to enable sequential tool calling
      */
     private function executeToolLoop(array $initialMessages, array $response, array $options, string $requestId): array
     {
-        $messages = $initialMessages;
-        $maxIterations = $this->config['tools']['max_iterations'] ?? 5;
+        $maxIterations = $options['max_iterations'] ?? ($this->config['tools']['max_iterations'] ?? 8);
         $iteration = 0;
-        
-        while ($iteration < $maxIterations) {
+        $startTime = microtime(true);
+        $maxTime = 30; // 30 second wall-clock limit
+        $seenCalls = []; // Track tool calls to detect oscillations
+        $messages = $initialMessages;
+
+        while (true) {
             $iteration++;
             
-            // Check for function_call items in Responses API output
-            $output = $response['output'] ?? [];
-            $functionCalls = array_filter($output, fn($item) => ($item['type'] ?? null) === 'function_call');
-            
-            // If no tool calls, we're done
-            if (empty($functionCalls)) {
+            // Check iteration limit
+            if ($iteration > $maxIterations) {
+                \Log::warning('🔄 Tool loop stopped', ['reason' => 'max_iterations', 'iterations' => $iteration]);
                 break;
             }
             
-            // Execute each function call
-            foreach ($functionCalls as $functionCall) {
-                $callId = $functionCall['call_id'] ?? $functionCall['id'] ?? null;
-                $functionName = $functionCall['name'] ?? null;
-                $rawArgs = $functionCall['arguments'] ?? '{}';
+            // Check wall-clock time limit
+            if (microtime(true) - $startTime > $maxTime) {
+                \Log::warning('🔄 Tool loop stopped', ['reason' => 'timeout', 'elapsed' => microtime(true) - $startTime]);
+                throw new AIResponseException("Tool execution exceeded time limit ({$maxTime}s)");
+            }
+
+            $choice = $response['choices'][0]['message'] ?? null;
+            $toolCalls = $choice['tool_calls'] ?? [];
+
+            if (empty($toolCalls)) {
+                \Log::info('🔄 Tool loop complete', ['iteration' => $iteration, 'reason' => 'no_more_tool_calls']);
+                break;
+            }
+
+            \Log::info('🔄 Tool loop iteration', [
+                'iteration' => $iteration,
+                'max' => $maxIterations,
+                'tool_calls_count' => count($toolCalls),
+                'tool_names' => array_map(fn($c) => $c['function']['name'] ?? 'unknown', $toolCalls)
+            ]);
+
+            // Keep assistant tool_calls in transcript for context
+            $messages[] = [
+                'role' => 'assistant',
+                'content' => $choice['content'] ?? null,
+                'tool_calls' => $toolCalls,
+            ];
+
+            // Execute tools and append results as tool messages
+            foreach ($toolCalls as $call) {
+                $name = $call['function']['name'] ?? null;
+                $callId = $call['id'] ?? null;
                 
-                if (!$functionName || !$callId) {
-                    $messages[] = [
-                        'type' => 'function_call_output',
-                        'call_id' => $callId ?? 'unknown',
-                        'output' => json_encode(['error' => 'Missing function name or call_id'])
-                    ];
-                    continue;
+                if (!$name || !$callId) {
+                    throw new AIResponseException('Tool calls require non-empty id and function.name');
                 }
                 
-                // Parse JSON arguments with error handling
-                $arguments = json_decode($rawArgs, true);
-                if (json_last_error() !== JSON_ERROR_NONE) {
-                    $messages[] = [
-                        'type' => 'function_call_output',
-                        'call_id' => $callId,
-                        'output' => json_encode(['error' => 'Error parsing arguments: ' . json_last_error_msg()])
-                    ];
-                    continue;
+                // Check if tool is registered
+                if (!$this->toolRegistry->isRegistered($name)) {
+                    throw new AIResponseException("Unknown tool: {$name}");
                 }
                 
+                // Detect oscillation (same tool called repeatedly with same args)
+                $argsRaw = $call['function']['arguments'] ?? '{}';
+                $callSignature = md5($name . $argsRaw);
+                if (isset($seenCalls[$callSignature]) && $seenCalls[$callSignature] >= 2) {
+                    \Log::warning('🔄 Tool loop stopped', ['reason' => 'oscillation', 'tool' => $name]);
+                    throw new AIResponseException("Tool oscillation detected: {$name} called repeatedly with same arguments");
+                }
+                $seenCalls[$callSignature] = ($seenCalls[$callSignature] ?? 0) + 1;
+
+                $args = is_string($argsRaw) ? json_decode($argsRaw, true) : (is_array($argsRaw) ? $argsRaw : []);
+                if ($args === null) {
+                    $args = [];
+                }
+
                 try {
-                    // Execute the tool via registry
-                    $result = $this->toolRegistry->call($functionName, $arguments);
-                    
-                    // Safely serialize result
-                    if (is_string($result)) {
-                        $output = $result;
-                    } else {
-                        try {
-                            $output = json_encode($result, JSON_THROW_ON_ERROR);
-                        } catch (\JsonException $je) {
-                            $output = json_encode(['error' => 'Error serializing result: ' . $je->getMessage()]);
-                        }
-                    }
+                    $result = $this->toolRegistry->call($name, $args);
                     
                     $messages[] = [
-                        'type' => 'function_call_output',
-                        'call_id' => $callId,
-                        'output' => $output
+                        'role' => 'tool',
+                        'tool_call_id' => $callId,
+                        'content' => is_string($result) ? $result : json_encode($result, JSON_THROW_ON_ERROR),
                     ];
                 } catch (\Exception $e) {
-                    // Add error as tool result
                     $messages[] = [
-                        'type' => 'function_call_output',
-                        'call_id' => $callId,
-                        'output' => json_encode(['error' => 'Error executing tool: ' . $e->getMessage()])
+                        'role' => 'tool',
+                        'tool_call_id' => $callId,
+                        'content' => json_encode(['error' => $e->getMessage()], JSON_THROW_ON_ERROR),
                     ];
                 }
             }
+
+            // CRITICAL FIX: Rebuild payload with tools each iteration
+            $iterOptions = $options;
+            if (empty($iterOptions['tools'])) {
+                $iterOptions['tools'] = $this->defaultTools;
+            }
+            $iterOptions['tool_choice'] = $iterOptions['tool_choice'] ?? 'auto';
+
+            \Log::info('🔄 Making next request in loop', [
+                'iteration' => $iteration,
+                'has_tools' => !empty($iterOptions['tools']),
+                'tool_count' => count($iterOptions['tools'] ?? []),
+                'tool_choice' => $iterOptions['tool_choice']
+            ]);
+
+            $context = $this->buildRequestContext($messages, $iterOptions);
             
-            // Make another request with the updated conversation
-            $context = $this->buildRequestContext($messages, $options);
+            // DEFENSIVE: Ensure tools are in payload
+            if (!empty($context['tools']) && empty($context['payload']['tools'])) {
+                $context['payload']['tools'] = $this->processTools($context['tools']);
+                $context['payload']['tool_choice'] = $iterOptions['tool_choice'] ?? 'auto';
+            }
+            
             $response = $this->makeRequest($context['payload']);
+
+            if ($iteration >= $maxIterations) {
+                \Log::warning('🔄 Tool loop complete', ['iteration' => $iteration, 'reason' => 'max_iterations']);
+                break;
+            }
         }
-        
-        if ($iteration >= $maxIterations) {
-            throw new AIResponseException("Tool execution exceeded maximum iterations ({$maxIterations})");
-        }
-        
+
         return $response;
     }
 }

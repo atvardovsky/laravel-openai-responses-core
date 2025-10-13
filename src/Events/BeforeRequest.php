@@ -40,7 +40,7 @@ class BeforeRequest
     *                      - 'max_output_tokens' (int): Maximum response tokens
     *                      - 'tools' (array): Available tools (if any)
     *                      - 'tool_choice' (string): Tool selection mode
-    *                      - 'tool_resources' (array): Vector stores, etc.
+    *                      - Vector store IDs embedded in file_search tool definitions
     *                      - 'stream' (array|bool): Streaming configuration
     * @param array $options Original options passed to respond() or stream()
     * @param string|null $requestId Unique identifier for this request

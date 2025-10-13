@@ -9,7 +9,7 @@ A Laravel package for working with OpenAI's Responses API with minimal overhead.
 - **Thread-Safe**: Immutable service instances prevent state mutation
 - **Input Validation**: Comprehensive validation for security and reliability
 - **Function Calling**: Automatic tool execution with `function_call` and `function_call_output` support
-- **Vector Store Support**: Native `tool_resources` support for file_search and RAG applications
+- **Vector Store Support**: Native `file_search` with vector store IDs for RAG applications
 - **Event System**: BeforeRequest, AfterResponse, ToolCalled, RateLimited events
 - **Streaming Support**: Memory-safe generator-based streaming with bounded buffers
 - **Smart Cost Calculation**: Model-specific pricing with automatic updates (Sep 2025)
@@ -162,8 +162,11 @@ $response = AIResponses::withFiles([
 The Responses API supports `file_search` with vector store IDs passed directly in the tools array:
 
 ```php
-// Assuming you have a vector store ID from OpenAI
-$vectorStoreId = 'vs_abc123';
+use Atvardovsky\LaravelOpenAIResponses\Services\VectorStoreService;
+
+// Create a vector store (or use existing ID)
+$vectorStore = app(VectorStoreService::class)->create('project-knowledge');
+$vectorStoreId = $vectorStore['id']; // e.g., 'vs_abc123'
 
 // Use file_search tool - vector_store_ids go inside the tool definition
 $response = AIResponses::respond([
@@ -179,6 +182,14 @@ $response = AIResponses::respond([
 
 echo $response['choices'][0]['message']['content'];
 ```
+
+**VectorStoreService Methods:**
+- `create(string $name, array $fileIds = [], array $metadata = []): array` - Create new vector store
+- `uploadFile(string $content, string $filename): array` - Upload file to OpenAI
+- `addFile(string $vectorStoreId, string $fileId): array` - Add file to existing store
+- `get(string $vectorStoreId): array` - Get vector store details
+- `delete(string $vectorStoreId): array` - Delete vector store
+- `createFromSchema(string $schemaContent, string $name): array` - Create store from schema
 
 **Note**: The package internally uses the Responses API (`POST /v1/responses`) but maintains a Chat Completions-compatible interface for easy migration.
 
@@ -210,6 +221,22 @@ Event::listen(AfterResponse::class, function ($event) {
         'metrics' => $event->metrics
     ]);
 });
+
+// Monitor tool execution
+Event::listen(\Atvardovsky\LaravelOpenAIResponses\Events\ToolCalled::class, function ($event) {
+    Log::info('Tool executed', [
+        'name' => $event->toolName,
+        'duration_ms' => $event->durationMs
+    ]);
+});
+
+// Handle rate limiting
+Event::listen(\Atvardovsky\LaravelOpenAIResponses\Events\RateLimited::class, function ($event) {
+    Log::warning('Rate limited', [
+        'type' => $event->type,
+        'retry_after' => $event->retryAfter
+    ]);
+});
 ```
 
 ## API Reference
@@ -230,6 +257,7 @@ $response = AIResponses::respond($messages, [
         ]
     ],
     'auto_execute_tools' => true,        // Auto-execute tool calls (default: true)
+    'stream' => ['include_usage' => true], // Include token usage in streaming (auto-enabled if metrics enabled)
 ]);
 ```
 
@@ -461,30 +489,17 @@ All configuration options in `config/ai_responses.php`:
 - PHP 8.2+
 - Laravel 11.0+
 
-## API Documentation
+## IDE Support
 
-The package includes comprehensive PHPDoc annotations compatible with Laravel API Documentation Generator:
+The package includes comprehensive PHPDoc annotations across all services, events, models, and exceptions. No HTTP routes are exposed, so HTTP API documentation generators are not applicable.
 
-```bash
-# Install the documentation generator
-composer require --dev mpociot/laravel-apidoc-generator
-
-# Generate API documentation
-php artisan apidoc:generate
-
-# View the generated documentation
-open public/docs/index.html
-```
-
-### Available Documentation
+**Documented Components:**
 
 - **Service Classes**: Complete method signatures, parameters, return types, and examples
 - **Event Classes**: Event properties, usage patterns, and listener examples  
 - **Model Classes**: Database fields, relationships, and query scopes
 - **Exception Classes**: Error contexts, handling strategies, and debugging info
 - **Configuration**: All config options with descriptions and defaults
-
-### IDE Support
 
 The package provides full IDE autocomplete and type checking through:
 

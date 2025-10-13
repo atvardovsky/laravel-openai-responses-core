@@ -77,7 +77,7 @@ return [
         'max_registered' => env('OPENAI_MAX_TOOLS', 100),
         'timeout' => env('OPENAI_TOOL_TIMEOUT', 10),
         'auto_execute' => env('OPENAI_AUTO_EXECUTE_TOOLS', true),
-        'max_iterations' => env('OPENAI_MAX_TOOL_ITERATIONS', 5),
+        'max_iterations' => env('OPENAI_MAX_TOOL_ITERATIONS', 30), // Increased for multi-query support
     ],
     
     /*
@@ -87,6 +87,7 @@ return [
     */
     'files' => [
         'max_size' => env('OPENAI_MAX_FILE_SIZE', 20 * 1024 * 1024), // 20MB
+        'max_count' => env('OPENAI_MAX_FILE_COUNT', 10), // Maximum files per request
         'allowed_types' => ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
     ],
     
