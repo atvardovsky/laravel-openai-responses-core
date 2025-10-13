@@ -429,15 +429,6 @@ class AIResponsesService
         if ($options['stream'] ?? false) {
             $payload['stream'] = true;
         }
-        
-        // DEBUG: Log payload to verify parallel_tool_calls is set
-        \Log::info('🔧 AI REQUEST PAYLOAD', [
-            'has_tools' => !empty($tools),
-            'tool_count' => count($tools ?? []),
-            'tool_choice' => $payload['tool_choice'] ?? 'none',
-            'parallel_tool_calls' => $payload['parallel_tool_calls'] ?? false,
-            'tools' => array_map(fn($t) => $t['name'] ?? $t['type'] ?? 'unknown', $payload['tools'] ?? [])
-        ]);
 
         return [
             'payload' => $payload,
@@ -1180,13 +1171,11 @@ class AIResponsesService
             
             // Check iteration limit
             if ($iteration > $maxIterations) {
-                \Log::warning('🔄 Tool loop stopped', ['reason' => 'max_iterations', 'iterations' => $iteration]);
                 break;
             }
             
             // Check wall-clock time limit
             if (microtime(true) - $startTime > $maxTime) {
-                \Log::warning('🔄 Tool loop stopped', ['reason' => 'timeout', 'elapsed' => microtime(true) - $startTime]);
                 throw new AIResponseException("Tool execution exceeded time limit ({$maxTime}s)");
             }
 
@@ -1194,16 +1183,8 @@ class AIResponsesService
             $toolCalls = $choice['tool_calls'] ?? [];
 
             if (empty($toolCalls)) {
-                \Log::info('🔄 Tool loop complete', ['iteration' => $iteration, 'reason' => 'no_more_tool_calls']);
                 break;
             }
-
-            \Log::info('🔄 Tool loop iteration', [
-                'iteration' => $iteration,
-                'max' => $maxIterations,
-                'tool_calls_count' => count($toolCalls),
-                'tool_names' => array_map(fn($c) => $c['function']['name'] ?? 'unknown', $toolCalls)
-            ]);
 
             // Keep assistant tool_calls in transcript for context
             $messages[] = [
@@ -1230,7 +1211,6 @@ class AIResponsesService
                 $argsRaw = $call['function']['arguments'] ?? '{}';
                 $callSignature = md5($name . $argsRaw);
                 if (isset($seenCalls[$callSignature]) && $seenCalls[$callSignature] >= 2) {
-                    \Log::warning('🔄 Tool loop stopped', ['reason' => 'oscillation', 'tool' => $name]);
                     throw new AIResponseException("Tool oscillation detected: {$name} called repeatedly with same arguments");
                 }
                 $seenCalls[$callSignature] = ($seenCalls[$callSignature] ?? 0) + 1;
@@ -1257,23 +1237,16 @@ class AIResponsesService
                 }
             }
 
-            // CRITICAL FIX: Rebuild payload with tools each iteration
+            // Rebuild payload with tools each iteration
             $iterOptions = $options;
             if (empty($iterOptions['tools'])) {
                 $iterOptions['tools'] = $this->defaultTools;
             }
             $iterOptions['tool_choice'] = $iterOptions['tool_choice'] ?? 'auto';
 
-            \Log::info('🔄 Making next request in loop', [
-                'iteration' => $iteration,
-                'has_tools' => !empty($iterOptions['tools']),
-                'tool_count' => count($iterOptions['tools'] ?? []),
-                'tool_choice' => $iterOptions['tool_choice']
-            ]);
-
             $context = $this->buildRequestContext($messages, $iterOptions);
             
-            // DEFENSIVE: Ensure tools are in payload
+            // Ensure tools are in payload
             if (!empty($context['tools']) && empty($context['payload']['tools'])) {
                 $context['payload']['tools'] = $this->processTools($context['tools']);
                 $context['payload']['tool_choice'] = $iterOptions['tool_choice'] ?? 'auto';
@@ -1282,7 +1255,6 @@ class AIResponsesService
             $response = $this->makeRequest($context['payload']);
 
             if ($iteration >= $maxIterations) {
-                \Log::warning('🔄 Tool loop complete', ['iteration' => $iteration, 'reason' => 'max_iterations']);
                 break;
             }
         }
